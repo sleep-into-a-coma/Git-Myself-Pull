@@ -1,0 +1,26 @@
+{
+  "name": "git-auto-pull",
+  "private": true,
+  "version": "3.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "latest",
+    "@tauri-apps/plugin-dialog": "latest",
+    "@tauri-apps/plugin-opener": "latest",
+    "@tauri-apps/plugin-process": "latest",
+    "@tauri-apps/plugin-updater": "latest",
+    "vue": "latest"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "latest",
+    "@vitejs/plugin-vue": "latest",
+    "typescript": "~5.9.3",
+    "vite": "latest",
+    "vue-tsc": "latest"
+  }
+}
