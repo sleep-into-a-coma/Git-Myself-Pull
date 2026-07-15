@@ -58,6 +58,9 @@ fn open_folder(path: String) -> Result<(), String> {
 #[tauri::command]
 fn save_settings(app: AppHandle, store: State<'_, Store>, mut settings: Settings) -> Result<(), String> {
     settings.max_log_size_mb = settings.max_log_size_mb.clamp(1, 100);
+    settings.contrast = settings.contrast.min(100);
+    settings.ui_font_size = settings.ui_font_size.clamp(11, 20);
+    settings.code_font_size = settings.code_font_size.clamp(10, 20);
     for repo in &mut settings.repositories { repo.interval_minutes = repo.interval_minutes.clamp(1, 10080); }
     let autostart = app.autolaunch();
     if settings.start_with_windows { autostart.enable().map_err(|e| e.to_string())?; } else { autostart.disable().map_err(|e| e.to_string())?; }
