@@ -1,19 +1,94 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { api } from './api'
-import type { AppState, Repository, Settings } from './types'
+import type { AppState, MotionPreference, Repository, ThemeMode } from './types'
 
 type Page = 'repositories' | 'automation' | 'settings' | 'logs'
-const page = ref<Page>('repositories')
+const requestedPage = new URLSearchParams(window.location.search).get('page')
+const page = ref<Page>((['repositories', 'automation', 'settings', 'logs'] as const).includes(requestedPage as Page) ? requestedPage as Page : 'repositories')
 const loading = ref(true)
 const busy = ref(false)
 const toast = ref('')
-const state = reactive<AppState>({ version: '3.0.2', settings: { repositories: [], startWithWindows: false, closeBehavior: 'background', proxyMode: 'system', proxyAddress: '', autoMaintainLogs: true, maxLogSizeMb: 5, autoCheckUpdates: true, updateEndpoint: 'https://github.com/sleep-into-a-coma/Git-Myself-Pull/releases/latest/download/latest.json' }, logs: [] })
+const state = reactive<AppState>({ version: '3.1.0', settings: { repositories: [], startWithWindows: false, closeBehavior: 'background', proxyMode: 'system', proxyAddress: '', autoMaintainLogs: true, maxLogSizeMb: 5, autoCheckUpdates: true, updateEndpoint: 'https://github.com/sleep-into-a-coma/Git-Myself-Pull/releases/latest/download/latest.json', themeMode: 'system', accentColor: '#0169cc', lightBackground: '#ffffff', lightForeground: '#0d0d0d', darkBackground: '#202223', darkForeground: '#f4f4f4', uiFont: "'Segoe UI Variable', 'Microsoft YaHei UI', 'Segoe UI', sans-serif", codeFont: "'Cascadia Mono', Consolas, monospace", translucentSidebar: true, contrast: 45, pointerCursor: false, motionPreference: 'system', uiFontSize: 14, codeFontSize: 12 }, logs: [] })
 const selectedId = ref<string | null>(null)
 const blank = (): Repository => ({ id: '', name: '', url: '', localPath: '', branch: '', autoPull: false, intervalMinutes: 30, lastStatus: '尚未更新', isRunning: false })
 const form = reactive<Repository>(blank())
 const selected = computed(() => state.settings.repositories.find(r => r.id === selectedId.value))
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)')
+const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+const systemDark = ref(darkQuery.matches)
+const systemReducedMotion = ref(motionQuery.matches)
+const effectiveDark = computed(() => state.settings.themeMode === 'dark' || (state.settings.themeMode === 'system' && systemDark.value))
+const activeBackground = computed({
+  get: () => effectiveDark.value ? state.settings.darkBackground : state.settings.lightBackground,
+  set: value => { if (effectiveDark.value) state.settings.darkBackground = value; else state.settings.lightBackground = value },
+})
+const activeForeground = computed({
+  get: () => effectiveDark.value ? state.settings.darkForeground : state.settings.lightForeground,
+  set: value => { if (effectiveDark.value) state.settings.darkForeground = value; else state.settings.lightForeground = value },
+})
+const activeThemeName = computed(() => effectiveDark.value ? '深色' : '浅色')
+
+function validHex(value: string, fallback: string) { return /^#[0-9a-f]{6}$/i.test(value) ? value : fallback }
+function mixHex(first: string, second: string, amount: number) {
+  const a = validHex(first, '#ffffff').slice(1).match(/.{2}/g)!.map(value => parseInt(value, 16))
+  const b = validHex(second, '#0d0d0d').slice(1).match(/.{2}/g)!.map(value => parseInt(value, 16))
+  return `#${a.map((value, index) => Math.round(value + (b[index] - value) * amount).toString(16).padStart(2, '0')).join('')}`
+}
+function rgba(hex: string, alpha: number) {
+  const values = validHex(hex, '#ffffff').slice(1).match(/.{2}/g)!.map(value => parseInt(value, 16))
+  return `rgba(${values.join(', ')}, ${alpha})`
+}
+function contrastText(hex: string) {
+  const values = validHex(hex, '#0169cc').slice(1).match(/.{2}/g)!.map(value => parseInt(value, 16) / 255)
+  const luminance = values.map(value => value <= .03928 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0)
+  return luminance > .48 ? '#0d0d0d' : '#ffffff'
+}
+function applyAppearance() {
+  const root = document.documentElement
+  const dark = effectiveDark.value
+  const background = validHex(activeBackground.value, dark ? '#202223' : '#ffffff')
+  const foreground = validHex(activeForeground.value, dark ? '#f4f4f4' : '#0d0d0d')
+  const accent = validHex(state.settings.accentColor, '#0169cc')
+  const contrast = Math.max(0, Math.min(100, state.settings.contrast))
+  const surfaceAmount = (dark ? 5.5 : 2.2) + contrast * (dark ? .035 : .022)
+  const sidebarBase = mixHex(background, accent, dark ? .035 : .045)
+  const reduced = state.settings.motionPreference === 'reduce' || (state.settings.motionPreference === 'system' && systemReducedMotion.value)
+  const variables: Record<string, string> = {
+    '--page': background,
+    '--surface': mixHex(background, foreground, surfaceAmount / 100),
+    '--surface-hover': mixHex(background, foreground, (surfaceAmount + 3) / 100),
+    '--selected': mixHex(background, accent, (11 + contrast * .035) / 100),
+    '--text': foreground,
+    '--muted': mixHex(background, foreground, dark ? .62 : .56),
+    '--line': mixHex(background, foreground, (dark ? 15 : 9) / 100),
+    '--input': mixHex(background, foreground, (dark ? 9 : 1.2) / 100),
+    '--sidebar': state.settings.translucentSidebar ? rgba(sidebarBase, dark ? .86 : .8) : sidebarBase,
+    '--dark': foreground,
+    '--accent': accent,
+    '--accent-text': contrastText(accent),
+    '--ui-font': state.settings.uiFont,
+    '--code-font': state.settings.codeFont,
+    '--ui-font-size': `${state.settings.uiFontSize}px`,
+    '--code-font-size': `${state.settings.codeFontSize}px`,
+  }
+  Object.entries(variables).forEach(([name, value]) => root.style.setProperty(name, value))
+  root.dataset.theme = dark ? 'dark' : 'light'
+  root.dataset.translucent = String(state.settings.translucentSidebar)
+  root.dataset.pointer = String(state.settings.pointerCursor)
+  root.dataset.reduceMotion = String(reduced)
+  root.style.colorScheme = dark ? 'dark' : 'light'
+}
+function setTheme(mode: ThemeMode) { state.settings.themeMode = mode; void persistSettings() }
+function setMotion(mode: MotionPreference) { state.settings.motionPreference = mode; void persistSettings() }
+function resetAppearance() {
+  Object.assign(state.settings, { themeMode: 'system', accentColor: '#0169cc', lightBackground: '#ffffff', lightForeground: '#0d0d0d', darkBackground: '#202223', darkForeground: '#f4f4f4', uiFont: "'Segoe UI Variable', 'Microsoft YaHei UI', 'Segoe UI', sans-serif", codeFont: "'Cascadia Mono', Consolas, monospace", translucentSidebar: true, contrast: 45, pointerCursor: false, motionPreference: 'system', uiFontSize: 14, codeFontSize: 12 })
+  void persistSettings()
+}
+function mediaChanged() { systemDark.value = darkQuery.matches; systemReducedMotion.value = motionQuery.matches }
+
+watch(() => state.settings, applyAppearance, { deep: true, immediate: true })
 
 function apply(next: AppState) {
   state.version = next.version
@@ -57,11 +132,17 @@ async function checkUpdate(automatic = false) {
 }
 
 onMounted(async () => {
+  darkQuery.addEventListener('change', mediaChanged)
+  motionQuery.addEventListener('change', mediaChanged)
   try {
     await refresh()
     await listen<AppState>('state-changed', event => apply(event.payload))
     if (state.settings.autoCheckUpdates && state.settings.updateEndpoint.trim()) window.setTimeout(() => void checkUpdate(true), 1200)
   } catch (e) { notify(String(e)) } finally { loading.value = false }
+})
+onBeforeUnmount(() => {
+  darkQuery.removeEventListener('change', mediaChanged)
+  motionQuery.removeEventListener('change', mediaChanged)
 })
 </script>
 
@@ -114,11 +195,53 @@ onMounted(async () => {
       </template>
 
       <template v-else-if="page === 'settings'">
-        <header class="page-header"><div><h1>设置</h1><p>网络、程序行为与软件维护</p></div></header>
-        <section class="settings-grid">
-          <article class="settings-section surface"><h2>网络与代理</h2><div class="setting-row"><div><strong>代理模式</strong></div><select v-model="state.settings.proxyMode" @change="persistSettings"><option value="system">跟随系统 / VPN</option><option value="disabled">禁用代理</option><option value="custom">自定义代理</option></select></div><div v-if="state.settings.proxyMode === 'custom'" class="setting-row"><div><strong>代理地址</strong></div><input v-model="state.settings.proxyAddress" placeholder="http://127.0.0.1:7890" @change="persistSettings"/></div></article>
-          <article class="settings-section surface"><h2>程序行为</h2><div class="setting-row"><div><strong>随 Windows 启动</strong></div><button class="switch" :class="{ on: state.settings.startWithWindows }" @click="state.settings.startWithWindows = !state.settings.startWithWindows; persistSettings()"><i></i></button></div><div class="setting-row"><div><strong>关闭窗口时</strong></div><select v-model="state.settings.closeBehavior" @change="persistSettings"><option value="background">后台运行</option><option value="exit">关闭程序</option></select></div></article>
-          <article class="settings-section surface"><h2>软件维护</h2><div class="setting-row"><div><strong>自动维护日志</strong></div><button class="switch" :class="{ on: state.settings.autoMaintainLogs }" @click="state.settings.autoMaintainLogs = !state.settings.autoMaintainLogs; persistSettings()"><i></i></button></div><div class="setting-row"><div><strong>日志大小上限</strong></div><div class="inline-input"><input v-model.number="state.settings.maxLogSizeMb" type="number" min="1" max="100" @change="persistSettings"/><span>MB</span></div></div><div class="setting-row"><div><strong>自动检测软件更新</strong></div><button class="switch" :class="{ on: state.settings.autoCheckUpdates }" @click="state.settings.autoCheckUpdates = !state.settings.autoCheckUpdates; persistSettings()"><i></i></button></div><div class="setting-row"><div><strong>更新服务地址</strong></div><input v-model="state.settings.updateEndpoint" placeholder="https://…/latest.json" @change="persistSettings"/></div><div class="section-actions"><button class="button ghost" @click="clearLogs">清理日志</button><button class="button primary" @click="checkUpdate()">检测软件更新</button></div></article>
+        <header class="page-header settings-header"><div><h1>设置</h1><p>外观、偏好与应用维护</p></div><button class="button ghost" @click="resetAppearance">恢复默认外观</button></header>
+        <section class="settings-page">
+          <div class="settings-group">
+            <h2 class="settings-group-title">外观</h2>
+            <h3 class="settings-label">主题</h3>
+            <div class="theme-picker">
+              <button class="theme-choice" :class="{ selected: state.settings.themeMode === 'system' }" @click="setTheme('system')">
+                <span class="theme-preview system-preview"><i></i><b></b><em></em></span><span>系统</span>
+              </button>
+              <button class="theme-choice" :class="{ selected: state.settings.themeMode === 'light' }" @click="setTheme('light')">
+                <span class="theme-preview light-preview"><i></i><b></b><em></em></span><span>浅色</span>
+              </button>
+              <button class="theme-choice" :class="{ selected: state.settings.themeMode === 'dark' }" @click="setTheme('dark')">
+                <span class="theme-preview dark-preview"><i></i><b></b><em></em></span><span>深色</span>
+              </button>
+            </div>
+
+            <article class="codex-panel appearance-panel">
+              <div class="panel-title-row"><strong>{{ activeThemeName }}主题</strong><div class="theme-preset"><span>Aa</span><b>Codex</b><i>⌄</i></div></div>
+              <div class="setting-row appearance-row"><div><strong>强调色</strong><small>按钮、开关与选中状态</small></div><label class="color-control accent-control" :style="{ background: state.settings.accentColor, color: 'var(--accent-text)' }"><input v-model="state.settings.accentColor" type="color" @change="persistSettings"/><input v-model="state.settings.accentColor" aria-label="强调色" @change="persistSettings"/></label></div>
+              <div class="setting-row appearance-row"><div><strong>背景</strong><small>当前{{ activeThemeName }}主题背景</small></div><label class="color-control"><input v-model="activeBackground" type="color" @change="persistSettings"/><input v-model="activeBackground" aria-label="背景色" @change="persistSettings"/></label></div>
+              <div class="setting-row appearance-row"><div><strong>前景</strong><small>文字与主要控件颜色</small></div><label class="color-control dark-control"><input v-model="activeForeground" type="color" @change="persistSettings"/><input v-model="activeForeground" aria-label="前景色" @change="persistSettings"/></label></div>
+              <div class="setting-row appearance-row"><div><strong>UI 字体</strong></div><select v-model="state.settings.uiFont" class="font-select" @change="persistSettings"><option value="'Segoe UI Variable', 'Microsoft YaHei UI', 'Segoe UI', sans-serif">Codex</option><option value="'Microsoft YaHei UI', 'Segoe UI', sans-serif">微软雅黑</option><option value="'Segoe UI', sans-serif">Segoe UI</option></select></div>
+              <div class="setting-row appearance-row"><div><strong>代码字体</strong></div><select v-model="state.settings.codeFont" class="font-select code-select" @change="persistSettings"><option value="'Cascadia Mono', Consolas, monospace">Cascadia Mono</option><option value="Consolas, monospace">Consolas</option><option value="ui-monospace, monospace">系统等宽</option></select></div>
+              <div class="setting-row appearance-row"><div><strong>半透明侧边栏</strong><small>让侧栏融入窗口背景</small></div><button class="switch" :class="{ on: state.settings.translucentSidebar }" role="switch" :aria-checked="state.settings.translucentSidebar" @click="state.settings.translucentSidebar = !state.settings.translucentSidebar; persistSettings()"><i></i></button></div>
+              <div class="setting-row appearance-row"><div><strong>对比度</strong><small>调整界面层次与边界强度</small></div><div class="range-control"><input v-model.number="state.settings.contrast" type="range" min="0" max="100" @change="persistSettings"/><span>{{ state.settings.contrast }}</span></div></div>
+            </article>
+          </div>
+
+          <div class="settings-group">
+            <h2 class="settings-group-title">偏好设置</h2>
+            <article class="codex-panel">
+              <div class="setting-row appearance-row"><div><strong>使用指针光标</strong><small>悬停交互元素时切换为指针光标</small></div><button class="switch" :class="{ on: state.settings.pointerCursor }" role="switch" :aria-checked="state.settings.pointerCursor" @click="state.settings.pointerCursor = !state.settings.pointerCursor; persistSettings()"><i></i></button></div>
+              <div class="setting-row appearance-row"><div><strong>减少动态效果</strong><small>减少动画效果或匹配系统设置</small></div><div class="segmented"><button :class="{ active: state.settings.motionPreference === 'system' }" @click="setMotion('system')">系统</button><button :class="{ active: state.settings.motionPreference === 'reduce' }" @click="setMotion('reduce')">开启</button><button :class="{ active: state.settings.motionPreference === 'full' }" @click="setMotion('full')">关闭</button></div></div>
+              <div class="setting-row appearance-row"><div><strong>UI 字号</strong><small>调整应用界面使用的基准字号</small></div><div class="number-unit"><input v-model.number="state.settings.uiFontSize" type="number" min="11" max="20" @change="persistSettings"/><span>px</span></div></div>
+              <div class="setting-row appearance-row"><div><strong>代码字体大小</strong><small>调整日志等宽文本的字号</small></div><div class="number-unit"><input v-model.number="state.settings.codeFontSize" type="number" min="10" max="20" @change="persistSettings"/><span>px</span></div></div>
+            </article>
+          </div>
+
+          <div class="settings-group">
+            <h2 class="settings-group-title">应用设置</h2>
+            <div class="settings-grid compact-settings">
+              <article class="settings-section codex-panel"><h3>网络与代理</h3><div class="setting-row"><div><strong>代理模式</strong></div><select v-model="state.settings.proxyMode" @change="persistSettings"><option value="system">跟随系统 / VPN</option><option value="disabled">禁用代理</option><option value="custom">自定义代理</option></select></div><div v-if="state.settings.proxyMode === 'custom'" class="setting-row"><div><strong>代理地址</strong></div><input v-model="state.settings.proxyAddress" placeholder="http://127.0.0.1:7890" @change="persistSettings"/></div></article>
+              <article class="settings-section codex-panel"><h3>程序行为</h3><div class="setting-row"><div><strong>随 Windows 启动</strong></div><button class="switch" :class="{ on: state.settings.startWithWindows }" @click="state.settings.startWithWindows = !state.settings.startWithWindows; persistSettings()"><i></i></button></div><div class="setting-row"><div><strong>关闭窗口时</strong></div><select v-model="state.settings.closeBehavior" @change="persistSettings"><option value="background">后台运行</option><option value="exit">关闭程序</option></select></div></article>
+              <article class="settings-section codex-panel maintenance-panel"><h3>软件维护</h3><div class="setting-row"><div><strong>自动维护日志</strong></div><button class="switch" :class="{ on: state.settings.autoMaintainLogs }" @click="state.settings.autoMaintainLogs = !state.settings.autoMaintainLogs; persistSettings()"><i></i></button></div><div class="setting-row"><div><strong>日志大小上限</strong></div><div class="inline-input"><input v-model.number="state.settings.maxLogSizeMb" type="number" min="1" max="100" @change="persistSettings"/><span>MB</span></div></div><div class="setting-row"><div><strong>自动检测软件更新</strong></div><button class="switch" :class="{ on: state.settings.autoCheckUpdates }" @click="state.settings.autoCheckUpdates = !state.settings.autoCheckUpdates; persistSettings()"><i></i></button></div><div class="setting-row endpoint-row"><div><strong>更新服务地址</strong></div><input v-model="state.settings.updateEndpoint" placeholder="https://…/latest.json" @change="persistSettings"/></div><div class="section-actions"><button class="button ghost" @click="clearLogs">清理日志</button><button class="button primary" @click="checkUpdate()">检测软件更新</button></div></article>
+            </div>
+          </div>
         </section>
       </template>
 

@@ -1,5 +1,7 @@
 export type ProxyMode = 'system' | 'disabled' | 'custom'
 export type CloseBehavior = 'background' | 'exit'
+export type ThemeMode = 'system' | 'light' | 'dark'
+export type MotionPreference = 'system' | 'reduce' | 'full'
 
 export interface Repository {
   id: string
@@ -25,6 +27,20 @@ export interface Settings {
   maxLogSizeMb: number
   autoCheckUpdates: boolean
   updateEndpoint: string
+  themeMode: ThemeMode
+  accentColor: string
+  lightBackground: string
+  lightForeground: string
+  darkBackground: string
+  darkForeground: string
+  uiFont: string
+  codeFont: string
+  translucentSidebar: boolean
+  contrast: number
+  pointerCursor: boolean
+  motionPreference: MotionPreference
+  uiFontSize: number
+  codeFontSize: number
 }
 
 export interface AppState {

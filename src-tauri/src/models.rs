@@ -47,6 +47,14 @@ pub enum ProxyMode { #[default] System, Disabled, Custom }
 #[serde(rename_all = "camelCase")]
 pub enum CloseBehavior { #[default] Background, Exit }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemeMode { #[default] System, Light, Dark }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum MotionPreference { #[default] System, Reduce, Full }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -59,14 +67,38 @@ pub struct Settings {
     #[serde(default = "default_log_size")] pub max_log_size_mb: u32,
     #[serde(default = "yes")] pub auto_check_updates: bool,
     #[serde(default = "default_update_endpoint")] pub update_endpoint: String,
+    #[serde(default)] pub theme_mode: ThemeMode,
+    #[serde(default = "default_accent_color")] pub accent_color: String,
+    #[serde(default = "default_light_background")] pub light_background: String,
+    #[serde(default = "default_light_foreground")] pub light_foreground: String,
+    #[serde(default = "default_dark_background")] pub dark_background: String,
+    #[serde(default = "default_dark_foreground")] pub dark_foreground: String,
+    #[serde(default = "default_ui_font")] pub ui_font: String,
+    #[serde(default = "default_code_font")] pub code_font: String,
+    #[serde(default = "yes")] pub translucent_sidebar: bool,
+    #[serde(default = "default_contrast")] pub contrast: u8,
+    #[serde(default)] pub pointer_cursor: bool,
+    #[serde(default)] pub motion_preference: MotionPreference,
+    #[serde(default = "default_ui_font_size")] pub ui_font_size: u8,
+    #[serde(default = "default_code_font_size")] pub code_font_size: u8,
 }
 
 fn yes() -> bool { true }
 fn default_log_size() -> u32 { 5 }
 fn default_update_endpoint() -> String { DEFAULT_UPDATE_ENDPOINT.into() }
+fn default_accent_color() -> String { "#0169cc".into() }
+fn default_light_background() -> String { "#ffffff".into() }
+fn default_light_foreground() -> String { "#0d0d0d".into() }
+fn default_dark_background() -> String { "#202223".into() }
+fn default_dark_foreground() -> String { "#f4f4f4".into() }
+fn default_ui_font() -> String { "'Segoe UI Variable', 'Microsoft YaHei UI', 'Segoe UI', sans-serif".into() }
+fn default_code_font() -> String { "'Cascadia Mono', Consolas, monospace".into() }
+fn default_contrast() -> u8 { 45 }
+fn default_ui_font_size() -> u8 { 14 }
+fn default_code_font_size() -> u8 { 12 }
 
 impl Default for Settings {
-    fn default() -> Self { Self { repositories: vec![], start_with_windows: false, close_behavior: CloseBehavior::Background, proxy_mode: ProxyMode::System, proxy_address: String::new(), auto_maintain_logs: true, max_log_size_mb: 5, auto_check_updates: true, update_endpoint: default_update_endpoint() } }
+    fn default() -> Self { Self { repositories: vec![], start_with_windows: false, close_behavior: CloseBehavior::Background, proxy_mode: ProxyMode::System, proxy_address: String::new(), auto_maintain_logs: true, max_log_size_mb: 5, auto_check_updates: true, update_endpoint: default_update_endpoint(), theme_mode: ThemeMode::System, accent_color: default_accent_color(), light_background: default_light_background(), light_foreground: default_light_foreground(), dark_background: default_dark_background(), dark_foreground: default_dark_foreground(), ui_font: default_ui_font(), code_font: default_code_font(), translucent_sidebar: true, contrast: default_contrast(), pointer_cursor: false, motion_preference: MotionPreference::System, ui_font_size: default_ui_font_size(), code_font_size: default_code_font_size() } }
 }
 
 #[derive(Clone, Serialize)]
