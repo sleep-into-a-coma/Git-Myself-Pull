@@ -1,10 +1,18 @@
 use crate::models::{
-    GitAccountProfile, GitAuthStatus, GitResult, ProxyMode, Repository, RepositoryPathKind,
-    RepositoryPathStatus,
+    GitAccountProfile, GitAuthStatus, GitHubProject, GitResult, LocalGitProject,
+    ManagedProjectStatus, ProxyMode, Repository, RepositoryPathKind, RepositoryPathStatus,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use std::{fs, io::Read, path::Path, process::Command, time::Duration};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::Path,
+    process::{Command, Stdio},
+    time::Duration,
+};
+use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -12,6 +20,8 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const MAX_PROFILE_BYTES: u64 = 128 * 1024;
 const MAX_AVATAR_BYTES: u64 = 1536 * 1024;
+const MAX_REPOSITORIES_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_REPOSITORY_PAGES: u32 = 50;
 
 #[derive(Deserialize)]
 struct GitHubPublicProfile {
@@ -25,6 +35,35 @@ struct GitHubPublicProfile {
     #[serde(default)]
     followers: u32,
     avatar_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GitHubRepositoryResponse {
+    id: u64,
+    name: String,
+    full_name: String,
+    description: Option<String>,
+    clone_url: String,
+    default_branch: String,
+    private: bool,
+    fork: bool,
+    archived: bool,
+    language: Option<String>,
+    #[serde(default)]
+    stargazers_count: u32,
+    pushed_at: Option<DateTime<Utc>>,
+    permissions: Option<GitHubRepositoryPermissions>,
+}
+
+#[derive(Deserialize)]
+struct GitHubRepositoryPermissions {
+    #[serde(default)]
+    push: bool,
+}
+
+struct GitHubCredential {
+    username: String,
+    token: Zeroizing<String>,
 }
 
 pub fn detect_branch(path: &str) -> String {
@@ -190,6 +229,209 @@ pub fn github_logout(account: &str) -> Result<String, String> {
     )
     .map_err(|error| format!("退出 GitHub 失败：{error}"))?;
     Ok(format!("已退出 GitHub 账户 {stored}"))
+}
+
+pub fn github_projects(
+    account: &str,
+    proxy_mode: ProxyMode,
+    proxy_address: &str,
+) -> Result<Vec<GitHubProject>, String> {
+    if !valid_github_login(account.trim()) {
+        return Err("GitHub 账户名无效".into());
+    }
+    let credential = github_credential(account.trim(), &proxy_mode, proxy_address)?;
+    if !credential.username.eq_ignore_ascii_case(account.trim()) {
+        return Err("未找到指定 GitHub 账户的安全凭据".into());
+    }
+    let client = profile_client(&proxy_mode, proxy_address)?;
+    let mut projects = Vec::new();
+    for page in 1..=MAX_REPOSITORY_PAGES {
+        let url = format!(
+            "https://api.github.com/user/repos?affiliation=owner&visibility=all&sort=pushed&direction=desc&per_page=100&page={page}"
+        );
+        let mut response = client
+            .get(url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .bearer_auth(credential.token.as_str())
+            .send()
+            .map_err(|_| "无法连接 GitHub，请检查网络或代理设置".to_string())?;
+        if !response.status().is_success() {
+            return Err(match response.status().as_u16() {
+                401 => "GitHub 登录凭据已失效，请重新登录".into(),
+                403 => "GitHub 拒绝了仓库访问，请检查授权范围或稍后重试".into(),
+                _ => format!("GitHub 仓库请求失败（HTTP {}）", response.status().as_u16()),
+            });
+        }
+        if response
+            .content_length()
+            .is_some_and(|size| size > MAX_REPOSITORIES_BYTES)
+        {
+            return Err("GitHub 仓库响应超过安全大小限制".into());
+        }
+        let bytes = Zeroizing::new(read_limited(&mut response, MAX_REPOSITORIES_BYTES)?);
+        let repositories: Vec<GitHubRepositoryResponse> = serde_json::from_slice(&bytes)
+            .map_err(|_| "GitHub 仓库数据格式无效".to_string())?;
+        let count = repositories.len();
+        projects.extend(repositories.into_iter().map(|repository| GitHubProject {
+            id: repository.id,
+            name: repository.name,
+            full_name: repository.full_name,
+            description: clean_profile_text(repository.description, 240),
+            remote_key: normalize_remote(&repository.clone_url),
+            clone_url: repository.clone_url,
+            default_branch: repository.default_branch,
+            private: repository.private,
+            fork: repository.fork,
+            archived: repository.archived,
+            language: clean_profile_text(repository.language, 60),
+            stars: repository.stargazers_count,
+            can_push: repository
+                .permissions
+                .map(|permissions| permissions.push)
+                .unwrap_or(true)
+                && !repository.archived,
+            pushed_at: repository.pushed_at,
+        }));
+        if count < 100 {
+            break;
+        }
+    }
+    Ok(projects)
+}
+
+pub fn discover_local_projects(root: &str) -> Result<Vec<LocalGitProject>, String> {
+    let root = Path::new(root.trim());
+    if root.as_os_str().is_empty() || !root.is_dir() {
+        return Err("请选择存在的项目根目录".into());
+    }
+    let mut projects = Vec::new();
+    let mut visited = 0usize;
+    scan_project_directories(root, 0, &mut visited, &mut projects);
+    projects.sort_by(|left, right| left.path.to_lowercase().cmp(&right.path.to_lowercase()));
+    Ok(projects)
+}
+
+pub fn managed_project_status(path: &str, expected_url: &str) -> ManagedProjectStatus {
+    let path_status = inspect_path(path);
+    if path_status.kind != RepositoryPathKind::Git {
+        return empty_managed_status(path_status.kind, path_status.message);
+    }
+    let path = Path::new(path.trim());
+    let origin_url = run(
+        Some(path),
+        &["remote", "get-url", "origin"],
+        ProxyMode::System,
+        "",
+    )
+    .unwrap_or_default();
+    let remote_matches = !origin_url.trim().is_empty()
+        && normalize_remote(origin_url.trim()) == normalize_remote(expected_url.trim());
+    let branch = run(
+        Some(path),
+        &["branch", "--show-current"],
+        ProxyMode::System,
+        "",
+    )
+    .unwrap_or_default();
+    let porcelain = run(
+        Some(path),
+        &["status", "--porcelain=v1"],
+        ProxyMode::System,
+        "",
+    )
+    .unwrap_or_default();
+    let (changes, staged, unstaged, untracked) = count_worktree_changes(&porcelain);
+    let (behind, ahead) = upstream_counts(path);
+    let message = if !remote_matches {
+        "origin 与所选 GitHub 项目不一致".into()
+    } else if changes > 0 {
+        format!("{changes} 项本地改动待处理")
+    } else if ahead > 0 {
+        format!("有 {ahead} 个本地提交待推送")
+    } else if behind > 0 {
+        format!("远程领先 {behind} 个提交")
+    } else {
+        "本地工作区干净".into()
+    };
+    ManagedProjectStatus {
+        kind: RepositoryPathKind::Git,
+        message,
+        branch: branch.trim().to_string(),
+        origin_url: origin_url.trim().to_string(),
+        remote_matches,
+        changes,
+        staged,
+        unstaged,
+        untracked,
+        ahead,
+        behind,
+    }
+}
+
+pub fn commit_and_push(
+    repo: &Repository,
+    message: &str,
+    proxy_mode: ProxyMode,
+    proxy_address: &str,
+) -> Result<String, String> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("请填写提交说明".into());
+    }
+    let message: String = message.chars().take(500).collect();
+    let (path, branch) = validate_managed_repository(repo)?;
+    let status = run(
+        Some(path),
+        &["status", "--porcelain=v1"],
+        ProxyMode::System,
+        "",
+    )?;
+    if status.trim().is_empty() {
+        return Err("没有可提交的本地改动".into());
+    }
+    ensure_commit_identity(path)?;
+    run(Some(path), &["add", "--all"], ProxyMode::System, "")?;
+    let staged = run(
+        Some(path),
+        &["diff", "--cached", "--name-only"],
+        ProxyMode::System,
+        "",
+    )?;
+    let files = staged.lines().filter(|line| !line.trim().is_empty()).count();
+    if files == 0 {
+        return Err("没有可提交的改动，可能全部文件均被忽略".into());
+    }
+    run(
+        Some(path),
+        &["commit", "-m", &message],
+        ProxyMode::System,
+        "",
+    )?;
+    if let Err(error) = run(
+        Some(path),
+        &["push", "--set-upstream", "origin", &branch],
+        proxy_mode,
+        proxy_address,
+    ) {
+        return Err(format!("本地提交已创建，但推送失败：{error}"));
+    }
+    Ok(format!("已提交并推送 {files} 个文件"))
+}
+
+pub fn push_project(
+    repo: &Repository,
+    proxy_mode: ProxyMode,
+    proxy_address: &str,
+) -> Result<String, String> {
+    let (path, branch) = validate_managed_repository(repo)?;
+    run(
+        Some(path),
+        &["push", "--set-upstream", "origin", &branch],
+        proxy_mode,
+        proxy_address,
+    )?;
+    Ok(format!("已推送分支 {branch}"))
 }
 
 pub fn update(repo: &Repository, proxy_mode: ProxyMode, proxy_address: &str) -> GitResult {
@@ -481,6 +723,76 @@ fn github_accounts() -> Result<Vec<String>, String> {
         .collect())
 }
 
+fn github_credential(
+    account: &str,
+    proxy_mode: &ProxyMode,
+    proxy_address: &str,
+) -> Result<GitHubCredential, String> {
+    let mut command = Command::new("git");
+    match proxy_mode {
+        ProxyMode::Disabled => {
+            command.args(["-c", "http.proxy=", "-c", "https.proxy="]);
+        }
+        ProxyMode::Custom if !proxy_address.trim().is_empty() => {
+            command.args([
+                "-c",
+                &format!("http.proxy={}", proxy_address.trim()),
+                "-c",
+                &format!("https.proxy={}", proxy_address.trim()),
+            ]);
+        }
+        _ => {}
+    }
+    command
+        .args(["credential", "fill"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command
+        .spawn()
+        .map_err(|_| "无法启动 Git Credential Manager".to_string())?;
+    let input = format!("protocol=https\nhost=github.com\nusername={account}\n\n");
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法连接 Git Credential Manager".to_string())?
+        .write_all(input.as_bytes())
+        .map_err(|_| "无法读取 GitHub 安全凭据".to_string())?;
+    let mut output = child
+        .wait_with_output()
+        .map_err(|_| "无法读取 GitHub 安全凭据".to_string())?;
+    if !output.status.success() {
+        output.stdout.zeroize();
+        output.stderr.zeroize();
+        return Err("GitHub 凭据不可用，请重新登录".into());
+    }
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut username = String::new();
+    let mut token = String::new();
+    for line in text.lines() {
+        if let Some((name, value)) = line.split_once('=') {
+            match name {
+                "username" => username = value.to_string(),
+                "password" => token = value.to_string(),
+                _ => {}
+            }
+        }
+    }
+    text.zeroize();
+    output.stdout.zeroize();
+    output.stderr.zeroize();
+    if username.is_empty() || token.is_empty() {
+        token.zeroize();
+        return Err("GitHub 凭据不完整，请重新登录".into());
+    }
+    Ok(GitHubCredential {
+        username,
+        token: Zeroizing::new(token),
+    })
+}
+
 fn profile_client(
     proxy_mode: &ProxyMode,
     proxy_address: &str,
@@ -490,7 +802,7 @@ fn profile_client(
         .connect_timeout(Duration::from_secs(6))
         .timeout(Duration::from_secs(12))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("Git-Auto-Pull/3.3.0");
+        .user_agent(concat!("Git-Auto-Pull/", env!("CARGO_PKG_VERSION")));
     match proxy_mode {
         ProxyMode::Disabled => builder = builder.no_proxy(),
         ProxyMode::Custom if !proxy_address.trim().is_empty() => {
@@ -646,6 +958,185 @@ fn unavailable_profile(login: String) -> GitAccountProfile {
     }
 }
 
+fn scan_project_directories(
+    path: &Path,
+    depth: usize,
+    visited: &mut usize,
+    projects: &mut Vec<LocalGitProject>,
+) {
+    if *visited >= 8000 || projects.len() >= 400 {
+        return;
+    }
+    *visited += 1;
+    if path.join(".git").exists() {
+        if let Ok(origin_url) = run(
+            Some(path),
+            &["remote", "get-url", "origin"],
+            ProxyMode::System,
+            "",
+        ) {
+            if !origin_url.trim().is_empty() {
+                projects.push(LocalGitProject {
+                    name: path
+                        .file_name()
+                        .map(|value| value.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+                    path: path.to_string_lossy().into_owned(),
+                    remote_key: normalize_remote(origin_url.trim()),
+                    origin_url: origin_url.trim().to_string(),
+                    branch: detect_branch(&path.to_string_lossy()),
+                });
+            }
+        }
+        return;
+    }
+    if depth >= 5 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if *visited >= 8000 || projects.len() >= 400 {
+            break;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if matches!(
+            name.as_str(),
+            ".git"
+                | "node_modules"
+                | "target"
+                | "dist"
+                | "build"
+                | ".venv"
+                | "venv"
+                | "vendor"
+                | ".cache"
+        ) {
+            continue;
+        }
+        scan_project_directories(&entry.path(), depth + 1, visited, projects);
+    }
+}
+
+fn empty_managed_status(
+    kind: RepositoryPathKind,
+    message: String,
+) -> ManagedProjectStatus {
+    ManagedProjectStatus {
+        kind,
+        message,
+        branch: String::new(),
+        origin_url: String::new(),
+        remote_matches: false,
+        changes: 0,
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+        ahead: 0,
+        behind: 0,
+    }
+}
+
+fn count_worktree_changes(value: &str) -> (u32, u32, u32, u32) {
+    let mut changes = 0;
+    let mut staged = 0;
+    let mut unstaged = 0;
+    let mut untracked = 0;
+    for line in value.lines().filter(|line| !line.trim().is_empty()) {
+        changes += 1;
+        let status = line.as_bytes();
+        if status.starts_with(b"??") {
+            untracked += 1;
+            continue;
+        }
+        if status.first().is_some_and(|value| *value != b' ') {
+            staged += 1;
+        }
+        if status.get(1).is_some_and(|value| *value != b' ') {
+            unstaged += 1;
+        }
+    }
+    (changes, staged, unstaged, untracked)
+}
+
+fn upstream_counts(path: &Path) -> (u32, u32) {
+    let Ok(output) = run(
+        Some(path),
+        &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+        ProxyMode::System,
+        "",
+    ) else {
+        return (0, 0);
+    };
+    let mut values = output.split_whitespace();
+    let behind = values.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+    let ahead = values.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+    (behind, ahead)
+}
+
+fn validate_managed_repository(repo: &Repository) -> Result<(&Path, String), String> {
+    let path = Path::new(repo.local_path.trim());
+    if inspect_path(repo.local_path.trim()).kind != RepositoryPathKind::Git {
+        return Err("本地目录不是可用的 Git 仓库".into());
+    }
+    let origin = run(
+        Some(path),
+        &["remote", "get-url", "origin"],
+        ProxyMode::System,
+        "",
+    )?;
+    if normalize_remote(origin.trim()) != normalize_remote(repo.url.trim()) {
+        return Err("本地 origin 与个人项目地址不一致".into());
+    }
+    let branch = run(
+        Some(path),
+        &["branch", "--show-current"],
+        ProxyMode::System,
+        "",
+    )?
+    .trim()
+    .to_string();
+    if branch.is_empty() {
+        return Err("当前处于 detached HEAD，不能提交或推送".into());
+    }
+    if !repo.branch.trim().is_empty() && repo.branch.trim() != branch {
+        return Err(format!(
+            "当前分支为 {branch}，与项目设置的 {} 不一致",
+            repo.branch.trim()
+        ));
+    }
+    Ok((path, branch))
+}
+
+fn ensure_commit_identity(path: &Path) -> Result<(), String> {
+    let name = run(
+        Some(path),
+        &["config", "user.name"],
+        ProxyMode::System,
+        "",
+    )
+    .unwrap_or_default();
+    let email = run(
+        Some(path),
+        &["config", "user.email"],
+        ProxyMode::System,
+        "",
+    )
+    .unwrap_or_default();
+    if name.trim().is_empty() || email.trim().is_empty() {
+        Err("尚未配置 Git 提交身份，请先设置 user.name 与 user.email".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn join_error(message: String, details: String) -> String {
     if details.trim().is_empty() {
         message
@@ -732,17 +1223,16 @@ fn run(
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let output = command.output().map_err(|error| error.to_string())?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-    .trim()
-    .to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if output.status.success() {
-        Ok(text)
+        Ok(stdout)
     } else {
-        Err(text)
+        Err([stdout, stderr]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 }
 
@@ -767,8 +1257,9 @@ fn short(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_branch, initialize, inspect_path, is_allowed_avatar_url, normalize_remote, run,
-        update, valid_github_login, ProxyMode, Repository, RepositoryPathKind,
+        commit_and_push, default_branch, discover_local_projects, initialize, inspect_path,
+        is_allowed_avatar_url, managed_project_status, normalize_remote, run, update,
+        valid_github_login, ProxyMode, Repository, RepositoryPathKind,
     };
     use std::{fs, path::Path};
 
@@ -872,6 +1363,48 @@ mod tests {
         assert!(result.success, "{}\n{}", result.message, result.details);
         assert_eq!(result.message, "克隆完成");
         assert_eq!(inspect_path(local.to_str().unwrap()).kind, RepositoryPathKind::Git);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovers_status_and_pushes_managed_projects() {
+        let root = std::env::temp_dir().join(format!("git-auto-pull-manage-{}", uuid::Uuid::new_v4()));
+        let seed = root.join("seed");
+        let remote = root.join("remote.git");
+        let local = root.join("workspace").join("project");
+        fs::create_dir_all(&seed).unwrap();
+        run(Some(&seed), &["init", "--initial-branch=main"], ProxyMode::System, "").unwrap();
+        run(Some(&seed), &["config", "user.name", "Git Auto Pull Test"], ProxyMode::System, "").unwrap();
+        run(Some(&seed), &["config", "user.email", "test@example.invalid"], ProxyMode::System, "").unwrap();
+        fs::write(seed.join("README.md"), "seed").unwrap();
+        run(Some(&seed), &["add", "README.md"], ProxyMode::System, "").unwrap();
+        run(Some(&seed), &["commit", "-m", "seed"], ProxyMode::System, "").unwrap();
+        run(None, &["clone", "--bare", seed.to_str().unwrap(), remote.to_str().unwrap()], ProxyMode::System, "").unwrap();
+        fs::create_dir_all(local.parent().unwrap()).unwrap();
+        run(None, &["clone", remote.to_str().unwrap(), local.to_str().unwrap()], ProxyMode::System, "").unwrap();
+        run(Some(&local), &["config", "user.name", "Git Auto Pull Test"], ProxyMode::System, "").unwrap();
+        run(Some(&local), &["config", "user.email", "test@example.invalid"], ProxyMode::System, "").unwrap();
+        fs::write(local.join("README.md"), "changed").unwrap();
+
+        let mut repository = Repository::default();
+        repository.name = "project".into();
+        repository.url = remote.to_string_lossy().into_owned();
+        repository.local_path = local.to_string_lossy().into_owned();
+        repository.branch = "main".into();
+        let status = managed_project_status(&repository.local_path, &repository.url);
+        assert!(status.remote_matches);
+        assert_eq!(status.changes, 1);
+        let discovered = discover_local_projects(root.to_str().unwrap()).unwrap();
+        assert!(discovered.iter().any(|project| project.path == repository.local_path));
+
+        let message = commit_and_push(&repository, "managed update", ProxyMode::System, "").unwrap();
+        assert!(message.contains("1 个文件"));
+        let status = managed_project_status(&repository.local_path, &repository.url);
+        assert_eq!(status.changes, 0);
+        assert_eq!(status.ahead, 0);
+        let local_head = run(Some(&local), &["rev-parse", "HEAD"], ProxyMode::System, "").unwrap();
+        let remote_head = run(Some(&remote), &["rev-parse", "refs/heads/main"], ProxyMode::System, "").unwrap();
+        assert_eq!(local_head, remote_head);
         fs::remove_dir_all(root).unwrap();
     }
 }

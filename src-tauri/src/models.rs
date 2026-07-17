@@ -59,6 +59,7 @@ pub enum MotionPreference { #[default] System, Reduce, Full }
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default)] pub repositories: Vec<Repository>,
+    #[serde(default)] pub github_projects_root: String,
     #[serde(default)] pub start_with_windows: bool,
     #[serde(default)] pub close_behavior: CloseBehavior,
     #[serde(default)] pub proxy_mode: ProxyMode,
@@ -98,7 +99,7 @@ fn default_ui_font_size() -> u8 { 14 }
 fn default_code_font_size() -> u8 { 12 }
 
 impl Default for Settings {
-    fn default() -> Self { Self { repositories: vec![], start_with_windows: false, close_behavior: CloseBehavior::Background, proxy_mode: ProxyMode::System, proxy_address: String::new(), auto_maintain_logs: true, max_log_size_mb: 5, auto_check_updates: true, update_endpoint: default_update_endpoint(), theme_mode: ThemeMode::System, accent_color: default_accent_color(), light_background: default_light_background(), light_foreground: default_light_foreground(), dark_background: default_dark_background(), dark_foreground: default_dark_foreground(), ui_font: default_ui_font(), code_font: default_code_font(), translucent_sidebar: true, contrast: default_contrast(), pointer_cursor: false, motion_preference: MotionPreference::System, ui_font_size: default_ui_font_size(), code_font_size: default_code_font_size() } }
+    fn default() -> Self { Self { repositories: vec![], github_projects_root: String::new(), start_with_windows: false, close_behavior: CloseBehavior::Background, proxy_mode: ProxyMode::System, proxy_address: String::new(), auto_maintain_logs: true, max_log_size_mb: 5, auto_check_updates: true, update_endpoint: default_update_endpoint(), theme_mode: ThemeMode::System, accent_color: default_accent_color(), light_background: default_light_background(), light_foreground: default_light_foreground(), dark_background: default_dark_background(), dark_foreground: default_dark_foreground(), ui_font: default_ui_font(), code_font: default_code_font(), translucent_sidebar: true, contrast: default_contrast(), pointer_cursor: false, motion_preference: MotionPreference::System, ui_font_size: default_ui_font_size(), code_font_size: default_code_font_size() } }
 }
 
 #[derive(Clone, Serialize)]
@@ -139,4 +140,49 @@ pub struct GitAccountProfile {
     pub followers: u32,
     pub avatar_data: Option<String>,
     pub profile_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubProject {
+    pub id: u64,
+    pub name: String,
+    pub full_name: String,
+    pub description: Option<String>,
+    pub clone_url: String,
+    pub remote_key: String,
+    pub default_branch: String,
+    pub private: bool,
+    pub fork: bool,
+    pub archived: bool,
+    pub language: Option<String>,
+    pub stars: u32,
+    pub can_push: bool,
+    pub pushed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalGitProject {
+    pub name: String,
+    pub path: String,
+    pub origin_url: String,
+    pub remote_key: String,
+    pub branch: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedProjectStatus {
+    pub kind: RepositoryPathKind,
+    pub message: String,
+    pub branch: String,
+    pub origin_url: String,
+    pub remote_matches: bool,
+    pub changes: u32,
+    pub staged: u32,
+    pub unstaged: u32,
+    pub untracked: u32,
+    pub ahead: u32,
+    pub behind: u32,
 }

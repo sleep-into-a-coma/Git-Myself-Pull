@@ -3,7 +3,10 @@ mod models;
 mod store;
 
 use chrono::Utc;
-use models::{AppState, GitAuthStatus, Repository, RepositoryPathKind, RepositoryPathStatus, Settings};
+use models::{
+    AppState, GitAuthStatus, GitHubProject, LocalGitProject, ManagedProjectStatus, Repository,
+    RepositoryPathKind, RepositoryPathStatus, Settings,
+};
 use std::time::Duration;
 use store::Store;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -79,6 +82,41 @@ async fn logout_github(account: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn list_github_projects(
+    store: State<'_, Store>,
+    account: String,
+) -> Result<Vec<GitHubProject>, String> {
+    let (proxy_mode, proxy_address) = {
+        let settings = store.settings.lock().unwrap();
+        (settings.proxy_mode.clone(), settings.proxy_address.clone())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        git::github_projects(&account, proxy_mode, &proxy_address)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn discover_local_projects(root: String) -> Result<Vec<LocalGitProject>, String> {
+    tauri::async_runtime::spawn_blocking(move || git::discover_local_projects(&root))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn inspect_managed_project(
+    path: String,
+    expected_url: String,
+) -> Result<ManagedProjectStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::managed_project_status(&path, &expected_url)
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn choose_folder(app: AppHandle) -> Option<String> { app.dialog().file().blocking_pick_folder().map(|p| p.to_string()) }
 
 #[tauri::command]
@@ -104,6 +142,26 @@ fn clear_logs(app: AppHandle, store: State<'_, Store>) { store.clear_logs(); pub
 
 #[tauri::command]
 async fn update_repository(app: AppHandle, id: String) -> Result<(), String> { update_one(app, id).await }
+
+#[tauri::command]
+async fn commit_and_push_project(
+    app: AppHandle,
+    id: String,
+    message: String,
+) -> Result<String, String> {
+    project_write_operation(app, id, "正在提交并推送…", move |repo, mode, address| {
+        git::commit_and_push(&repo, &message, mode, &address)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn push_project(app: AppHandle, id: String) -> Result<String, String> {
+    project_write_operation(app, id, "正在推送…", move |repo, mode, address| {
+        git::push_project(&repo, mode, &address)
+    })
+    .await
+}
 
 #[tauri::command]
 async fn initialize_repository(app: AppHandle, id: String) -> Result<String, String> {
@@ -169,6 +227,62 @@ async fn update_one(app: AppHandle, id: String) -> Result<(), String> {
     }
     store.log(format!("[{}] {}", repo_name, result.message)); if !result.details.is_empty() { store.log(result.details); } store.save()?; publish(&app);
     if result.success { Ok(()) } else { Err(result.message) }
+}
+
+async fn project_write_operation<F>(
+    app: AppHandle,
+    id: String,
+    running_message: &str,
+    operation: F,
+) -> Result<String, String>
+where
+    F: FnOnce(Repository, models::ProxyMode, String) -> Result<String, String> + Send + 'static,
+{
+    let store = app.state::<Store>();
+    let (repo, proxy_mode, proxy_address) = {
+        let mut settings = store.settings.lock().unwrap();
+        let proxy_mode = settings.proxy_mode.clone();
+        let proxy_address = settings.proxy_address.clone();
+        let Some(repo) = settings.repositories.iter_mut().find(|repo| repo.id == id) else {
+            return Err("项目不存在".into());
+        };
+        if repo.is_running {
+            return Err("项目正在执行其他任务".into());
+        }
+        repo.is_running = true;
+        repo.last_status = running_message.into();
+        (repo.clone(), proxy_mode, proxy_address)
+    };
+    publish(&app);
+    let repo_name = repo.name.clone();
+    let result = match tauri::async_runtime::spawn_blocking(move || {
+        operation(repo, proxy_mode, proxy_address)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(format!("项目任务异常结束：{error}")),
+    };
+    {
+        let mut settings = store.settings.lock().unwrap();
+        if let Some(repo) = settings.repositories.iter_mut().find(|repo| repo.id == id) {
+            repo.is_running = false;
+            repo.last_status = result
+                .as_ref()
+                .map_or_else(|error| error.clone(), |message| message.clone());
+            if result.is_ok() {
+                repo.last_success = Some(Utc::now());
+            }
+        }
+    }
+    if let Ok(message) = &result {
+        store.log(format!("[{repo_name}] {message}"));
+    } else {
+        store.log(format!("[{repo_name}] 项目写入操作失败"));
+    }
+    store.save()?;
+    publish(&app);
+    result
 }
 
 #[tauri::command]
@@ -240,7 +354,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .setup(|app| { setup_tray(app)?; if std::env::args().any(|a| a == "--minimized") { if let Some(window) = app.get_webview_window("main") { let _ = window.hide(); } } start_scheduler(app.handle().clone()); Ok(()) })
         .on_window_event(|window, event| { if let tauri::WindowEvent::CloseRequested { api, .. } = event { if window.app_handle().state::<Store>().settings.lock().unwrap().close_behavior == models::CloseBehavior::Background { api.prevent_close(); let _ = window.hide(); } } })
-        .invoke_handler(tauri::generate_handler![get_state, save_repository, delete_repository, detect_branch, inspect_repository_path, get_git_auth_status, login_github, logout_github, choose_folder, open_folder, save_settings, clear_logs, update_repository, initialize_repository, update_all, check_app_update, install_app_update, exit_app])
+        .invoke_handler(tauri::generate_handler![get_state, save_repository, delete_repository, detect_branch, inspect_repository_path, get_git_auth_status, login_github, logout_github, list_github_projects, discover_local_projects, inspect_managed_project, choose_folder, open_folder, save_settings, clear_logs, update_repository, commit_and_push_project, push_project, initialize_repository, update_all, check_app_update, install_app_update, exit_app])
         .run(tauri::generate_context!())
         .expect("error while running Git Auto Pull");
 }
