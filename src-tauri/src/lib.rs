@@ -266,15 +266,24 @@ async fn initialize_repository(app: AppHandle, id: String) -> Result<String, Str
     let RepositoryOperation { repo, proxy_mode, proxy_address, permit } = begin_repository_operation(&app, &id, "等待注册 Git 仓库", "正在注册 Git 仓库…").await?;
     store.log(format!("[{}] 开始注册 Git 仓库", repo.name));
     let repo_name = repo.name.clone();
+    let repository_path = repo.local_path.clone();
     let result = match tauri::async_runtime::spawn_blocking(move || git::initialize(&repo, proxy_mode, &proxy_address)).await {
         Ok(result) => result,
         Err(error) => GitResult { success: false, message: format!("项目任务异常结束：{error}"), details: String::new() },
+    };
+    let detected_branch = if result.success {
+        git::detect_branch(&repository_path)
+    } else {
+        String::new()
     };
     {
         let mut settings = store.settings.lock().unwrap();
         if let Some(target) = settings.repositories.iter_mut().find(|repo| repo.id == id) {
             target.is_running = false;
             target.last_status = result.message.clone();
+            if target.branch.trim().is_empty() && !detected_branch.is_empty() {
+                target.branch = detected_branch;
+            }
         }
     }
     store.log(format!("[{}] {}", repo_name, result.message));

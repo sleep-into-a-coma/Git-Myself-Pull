@@ -14,35 +14,41 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Validate updater signing secrets
+      - name: Check updater signing secrets
+        id: signing
         shell: pwsh
         env:
           SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY)) {
-            throw "TAURI_SIGNING_PRIVATE_KEY is not configured"
-          }
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PASSWORD)) {
-            throw "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not configured"
+          $configured = ![string]::IsNullOrWhiteSpace($env:SIGNING_KEY) -and ![string]::IsNullOrWhiteSpace($env:SIGNING_PASSWORD)
+          "configured=$($configured.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          if (!$configured) {
+            Write-Warning "Updater signing secrets are not configured; cloud publishing is skipped"
           }
 
       - uses: actions/checkout@v4
+        if: steps.signing.outputs.configured == 'true'
 
       - uses: pnpm/action-setup@v4
+        if: steps.signing.outputs.configured == 'true'
         with:
           version: 10
 
       - uses: actions/setup-node@v4
+        if: steps.signing.outputs.configured == 'true'
         with:
           node-version: 22
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.signing.outputs.configured == 'true'
 
       - run: pnpm install --frozen-lockfile
+        if: steps.signing.outputs.configured == 'true'
 
       - uses: tauri-apps/tauri-action@v1
+        if: steps.signing.outputs.configured == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
