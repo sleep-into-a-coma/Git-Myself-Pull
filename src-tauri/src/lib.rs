@@ -50,7 +50,15 @@ fn detect_branch(path: String) -> String { git::detect_branch(&path) }
 fn inspect_repository_path(path: String) -> RepositoryPathStatus { git::inspect_path(&path) }
 
 #[tauri::command]
-fn get_git_auth_status() -> GitAuthStatus { git::auth_status() }
+async fn get_git_auth_status(store: State<'_, Store>) -> Result<GitAuthStatus, String> {
+    let (proxy_mode, proxy_address) = {
+        let settings = store.settings.lock().unwrap();
+        (settings.proxy_mode.clone(), settings.proxy_address.clone())
+    };
+    tauri::async_runtime::spawn_blocking(move || git::auth_status(proxy_mode, &proxy_address))
+        .await
+        .map_err(|error| error.to_string())
+}
 
 #[tauri::command]
 async fn login_github(store: State<'_, Store>) -> Result<String, String> {

@@ -15,7 +15,19 @@ export interface GitAuthStatus {
   credentialManagerAvailable: boolean
   credentialManagerVersion: string
   credentialHelper: string
-  accounts: string[]
+  accounts: GitAccountProfile[]
+}
+
+export interface GitAccountProfile {
+  login: string
+  name?: string
+  bio?: string
+  company?: string
+  location?: string
+  publicRepos: number
+  followers: number
+  avatarData?: string
+  profileError?: string
 }
 
 export interface Repository {

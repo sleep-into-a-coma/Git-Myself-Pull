@@ -234,11 +234,19 @@ html[data-translucent="true"] .sidebar { backdrop-filter: blur(22px) saturate(11
 .auth-section-title h2 { margin: 0; font-size: 1.03rem; }
 .auth-section-title p { margin: 5px 0 0; color: var(--muted); font-size: .83rem; }
 .auth-section-title > span { display: grid; place-items: center; min-width: 28px; height: 28px; padding: 0 8px; border-radius: 99px; background: var(--surface); color: var(--muted); font-size: .83rem; }
-.auth-account-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 13px; min-height: 68px; padding: 10px 24px; border-top: 1px solid var(--line); }
-.account-avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--selected); color: var(--accent); font-weight: 700; }
-.auth-account-row > div:nth-child(2) { display: grid; gap: 3px; }
-.auth-account-row strong { font-size: .94rem; }
-.auth-account-row span { color: var(--muted); font-size: .79rem; }
+.auth-account-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px; min-height: 94px; padding: 16px 24px; border-top: 1px solid var(--line); }
+.account-avatar { display: grid; place-items: center; width: 48px; height: 48px; overflow: hidden; border-radius: 50%; background: var(--selected); color: var(--accent); font-weight: 700; }
+.account-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.account-avatar span { color: inherit; font-size: 1rem; }
+.account-profile { display: grid; gap: 6px; min-width: 0; }
+.account-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.account-heading strong { overflow: hidden; font-size: .96rem; text-overflow: ellipsis; white-space: nowrap; }
+.account-heading span { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-profile p { display: -webkit-box; overflow: hidden; margin: 0; color: var(--text); font-size: .84rem; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.account-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.account-meta span { position: relative; }
+.account-meta span + span::before { position: absolute; left: -8px; content: "·"; }
+.auth-account-row span, .auth-account-row small { color: var(--muted); font-size: .79rem; }
 .danger-text { color: var(--danger); }
 .auth-empty { display: grid; place-items: center; align-content: center; gap: 7px; min-height: 150px; padding: 24px; border-top: 1px solid var(--line); color: var(--muted); text-align: center; }
 .auth-empty strong { color: var(--text); }
@@ -437,4 +445,6 @@ html[data-translucent="true"] .sidebar { backdrop-filter: blur(22px) saturate(11
   .repo-layout { grid-template-columns: 1fr; }
   .theme-picker { grid-template-columns: repeat(3, minmax(88px, 1fr)); }
   .settings-page { gap: 48px; }
+  .auth-account-row { grid-template-columns: auto minmax(0, 1fr); }
+  .auth-account-row > .button { grid-column: 2; justify-self: start; }
 }

@@ -124,5 +124,19 @@ pub struct GitAuthStatus {
     pub credential_manager_available: bool,
     pub credential_manager_version: String,
     pub credential_helper: String,
-    pub accounts: Vec<String>,
+    pub accounts: Vec<GitAccountProfile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitAccountProfile {
+    pub login: String,
+    pub name: Option<String>,
+    pub bio: Option<String>,
+    pub company: Option<String>,
+    pub location: Option<String>,
+    pub public_repos: u32,
+    pub followers: u32,
+    pub avatar_data: Option<String>,
+    pub profile_error: Option<String>,
 }

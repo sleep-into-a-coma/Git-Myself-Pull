@@ -297,10 +297,23 @@ onBeforeUnmount(() => {
 
           <article class="codex-panel auth-accounts">
             <div class="auth-section-title"><div><h2>已登录账户</h2><p>凭据由 Windows 凭据管理器保存</p></div><span>{{ authStatus?.accounts.length || 0 }}</span></div>
-            <div v-for="account in authStatus?.accounts" :key="account" class="auth-account-row">
-              <div class="account-avatar">{{ account.slice(0, 1).toUpperCase() }}</div>
-              <div><strong>{{ account }}</strong><span>github.com</span></div>
-              <button class="button ghost danger-text" :disabled="authBusy" @click="logoutGitHub(account)">退出</button>
+            <div v-for="profile in authStatus?.accounts" :key="profile.login" class="auth-account-row">
+              <div class="account-avatar">
+                <img v-if="profile.avatarData" :src="profile.avatarData" alt="" />
+                <span v-else>{{ profile.login.slice(0, 1).toUpperCase() }}</span>
+              </div>
+              <div class="account-profile">
+                <div class="account-heading"><strong>{{ profile.name || profile.login }}</strong><span>@{{ profile.login }}</span></div>
+                <p v-if="profile.bio">{{ profile.bio }}</p>
+                <div v-if="!profile.profileError" class="account-meta">
+                  <span v-if="profile.company">{{ profile.company }}</span>
+                  <span v-if="profile.location">{{ profile.location }}</span>
+                  <span>{{ profile.publicRepos }} 个公开仓库</span>
+                  <span>{{ profile.followers }} 位关注者</span>
+                </div>
+                <small v-else>公开资料暂不可用，Git 登录不受影响</small>
+              </div>
+              <button class="button ghost danger-text" :disabled="authBusy" @click="logoutGitHub(profile.login)">退出</button>
             </div>
             <div v-if="!authStatus?.accounts.length" class="auth-empty"><strong>还没有 GitHub 账户</strong><span>登录后即可克隆和更新有权限访问的私有仓库</span></div>
           </article>
@@ -309,7 +322,7 @@ onBeforeUnmount(() => {
 
           <article class="auth-note">
             <div class="note-icon">✓</div>
-            <div><strong>应用不会保存你的密码或令牌</strong><p>OAuth 凭据由 Git Credential Manager 写入 Windows 凭据管理器。Git Auto Pull 只读取账户名称和组件状态。</p></div>
+            <div><strong>应用不会读取或保存你的密码与令牌</strong><p>OAuth 凭据始终由 Git Credential Manager 保管。Rust 后端只用账户名请求 GitHub 公开资料，并在本地下载、校验和转换头像；资料不会写入配置或日志。</p></div>
           </article>
 
           <article class="codex-panel other-hosts">

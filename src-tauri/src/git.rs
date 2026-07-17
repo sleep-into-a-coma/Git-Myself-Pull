@@ -1,12 +1,31 @@
 use crate::models::{
-    GitAuthStatus, GitResult, ProxyMode, Repository, RepositoryPathKind, RepositoryPathStatus,
+    GitAccountProfile, GitAuthStatus, GitResult, ProxyMode, Repository, RepositoryPathKind,
+    RepositoryPathStatus,
 };
-use std::{fs, path::Path, process::Command};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use serde::Deserialize;
+use std::{fs, io::Read, path::Path, process::Command, time::Duration};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const MAX_PROFILE_BYTES: u64 = 128 * 1024;
+const MAX_AVATAR_BYTES: u64 = 1536 * 1024;
+
+#[derive(Deserialize)]
+struct GitHubPublicProfile {
+    login: String,
+    name: Option<String>,
+    bio: Option<String>,
+    company: Option<String>,
+    location: Option<String>,
+    #[serde(default)]
+    public_repos: u32,
+    #[serde(default)]
+    followers: u32,
+    avatar_url: Option<String>,
+}
 
 pub fn detect_branch(path: &str) -> String {
     run(
@@ -68,7 +87,7 @@ pub fn inspect_path(value: &str) -> RepositoryPathStatus {
     )
 }
 
-pub fn auth_status() -> GitAuthStatus {
+pub fn auth_status(proxy_mode: ProxyMode, proxy_address: &str) -> GitAuthStatus {
     let git_version = run(None, &["--version"], ProxyMode::System, "").unwrap_or_default();
     let credential_manager_version = run(
         None,
@@ -84,10 +103,20 @@ pub fn auth_status() -> GitAuthStatus {
         "",
     )
     .unwrap_or_default();
-    let accounts = if credential_manager_version.is_empty() {
+    let account_names = if credential_manager_version.is_empty() {
         Vec::new()
     } else {
         github_accounts().unwrap_or_default()
+    };
+    let accounts = match profile_client(&proxy_mode, proxy_address) {
+        Ok(client) => account_names
+            .into_iter()
+            .map(|account| github_profile(&client, &account))
+            .collect(),
+        Err(_) => account_names
+            .into_iter()
+            .map(unavailable_profile)
+            .collect(),
     };
     GitAuthStatus {
         git_available: !git_version.is_empty(),
@@ -452,6 +481,171 @@ fn github_accounts() -> Result<Vec<String>, String> {
         .collect())
 }
 
+fn profile_client(
+    proxy_mode: &ProxyMode,
+    proxy_address: &str,
+) -> Result<reqwest::blocking::Client, String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut builder = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(6))
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("Git-Auto-Pull/3.3.0");
+    match proxy_mode {
+        ProxyMode::Disabled => builder = builder.no_proxy(),
+        ProxyMode::Custom if !proxy_address.trim().is_empty() => {
+            builder = builder.proxy(
+                reqwest::Proxy::all(proxy_address.trim())
+                    .map_err(|error| format!("代理地址无效：{error}"))?,
+            );
+        }
+        ProxyMode::System => {
+            if let Ok(address) = run(
+                None,
+                &["config", "--get", "http.proxy"],
+                ProxyMode::System,
+                "",
+            ) {
+                if !address.trim().is_empty() {
+                    builder = builder.proxy(
+                        reqwest::Proxy::all(address.trim())
+                            .map_err(|error| format!("Git 代理地址无效：{error}"))?,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+    builder
+        .build()
+        .map_err(|error| format!("无法创建公开资料客户端：{error}"))
+}
+
+fn github_profile(client: &reqwest::blocking::Client, account: &str) -> GitAccountProfile {
+    if !valid_github_login(account) {
+        return unavailable_profile(account.to_string());
+    }
+    let result = (|| {
+        let mut response = client
+            .get(format!("https://api.github.com/users/{account}"))
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|error| error.to_string())?;
+        if response.content_length().is_some_and(|size| size > MAX_PROFILE_BYTES) {
+            return Err("公开资料响应过大".to_string());
+        }
+        let bytes = read_limited(&mut response, MAX_PROFILE_BYTES)?;
+        let profile: GitHubPublicProfile =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        let avatar_data = profile
+            .avatar_url
+            .as_deref()
+            .and_then(|url| download_avatar(client, url).ok());
+        Ok(GitAccountProfile {
+            login: profile.login,
+            name: clean_profile_text(profile.name, 80),
+            bio: clean_profile_text(profile.bio, 240),
+            company: clean_profile_text(profile.company, 100),
+            location: clean_profile_text(profile.location, 100),
+            public_repos: profile.public_repos,
+            followers: profile.followers,
+            avatar_data,
+            profile_error: None,
+        })
+    })();
+    result.unwrap_or_else(|_| unavailable_profile(account.to_string()))
+}
+
+fn download_avatar(client: &reqwest::blocking::Client, value: &str) -> Result<String, String> {
+    let url = url::Url::parse(value).map_err(|_| "头像地址无效".to_string())?;
+    if !is_allowed_avatar_url(&url) {
+        return Err("头像地址不受信任".into());
+    }
+    let mut response = client
+        .get(url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| error.to_string())?;
+    if response.content_length().is_some_and(|size| size > MAX_AVATAR_BYTES) {
+        return Err("头像文件过大".into());
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| {
+            matches!(
+                *value,
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+            )
+        })
+        .ok_or_else(|| "头像图片类型不受支持".to_string())?
+        .to_string();
+    let bytes = read_limited(&mut response, MAX_AVATAR_BYTES)?;
+    Ok(format!(
+        "data:{content_type};base64,{}",
+        BASE64.encode(bytes)
+    ))
+}
+
+fn read_limited(reader: &mut impl Read, limit: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > limit {
+        Err("响应超过允许大小".into())
+    } else {
+        Ok(bytes)
+    }
+}
+
+fn is_allowed_avatar_url(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        && url
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("avatars.githubusercontent.com"))
+}
+
+fn valid_github_login(account: &str) -> bool {
+    !account.is_empty()
+        && account.len() <= 39
+        && !account.starts_with('-')
+        && !account.ends_with('-')
+        && account
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || value == b'-')
+}
+
+fn clean_profile_text(value: Option<String>, limit: usize) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.chars().take(limit).collect())
+        }
+    })
+}
+
+fn unavailable_profile(login: String) -> GitAccountProfile {
+    GitAccountProfile {
+        login,
+        name: None,
+        bio: None,
+        company: None,
+        location: None,
+        public_repos: 0,
+        followers: 0,
+        avatar_data: None,
+        profile_error: Some("公开资料暂不可用".into()),
+    }
+}
+
 fn join_error(message: String, details: String) -> String {
     if details.trim().is_empty() {
         message
@@ -573,8 +767,8 @@ fn short(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_branch, initialize, inspect_path, normalize_remote, run, update, ProxyMode, Repository,
-        RepositoryPathKind,
+        default_branch, initialize, inspect_path, is_allowed_avatar_url, normalize_remote, run,
+        update, valid_github_login, ProxyMode, Repository, RepositoryPathKind,
     };
     use std::{fs, path::Path};
 
@@ -590,6 +784,22 @@ mod tests {
             normalize_remote("git@github.com:user/project.git"),
             normalize_remote("https://github.com/user/project/")
         );
+    }
+
+    #[test]
+    fn validates_github_accounts_and_avatar_hosts() {
+        assert!(valid_github_login("sleep-into-a-coma"));
+        assert!(!valid_github_login("-invalid"));
+        assert!(!valid_github_login("invalid/name"));
+        assert!(is_allowed_avatar_url(
+            &url::Url::parse("https://avatars.githubusercontent.com/u/1?v=4").unwrap()
+        ));
+        assert!(!is_allowed_avatar_url(
+            &url::Url::parse("https://example.com/avatar.png").unwrap()
+        ));
+        assert!(!is_allowed_avatar_url(
+            &url::Url::parse("http://avatars.githubusercontent.com/u/1").unwrap()
+        ));
     }
 
     #[test]
