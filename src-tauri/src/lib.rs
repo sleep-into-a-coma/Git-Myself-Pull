@@ -3,7 +3,7 @@ mod models;
 mod store;
 
 use chrono::Utc;
-use models::{AppState, Repository, RepositoryPathKind, RepositoryPathStatus, Settings};
+use models::{AppState, GitAuthStatus, Repository, RepositoryPathKind, RepositoryPathStatus, Settings};
 use std::time::Duration;
 use store::Store;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -48,6 +48,27 @@ fn detect_branch(path: String) -> String { git::detect_branch(&path) }
 
 #[tauri::command]
 fn inspect_repository_path(path: String) -> RepositoryPathStatus { git::inspect_path(&path) }
+
+#[tauri::command]
+fn get_git_auth_status() -> GitAuthStatus { git::auth_status() }
+
+#[tauri::command]
+async fn login_github(store: State<'_, Store>) -> Result<String, String> {
+    let (proxy_mode, proxy_address) = {
+        let settings = store.settings.lock().unwrap();
+        (settings.proxy_mode.clone(), settings.proxy_address.clone())
+    };
+    tauri::async_runtime::spawn_blocking(move || git::github_login(proxy_mode, &proxy_address))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn logout_github(account: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || git::github_logout(&account))
+        .await
+        .map_err(|error| error.to_string())?
+}
 
 #[tauri::command]
 fn choose_folder(app: AppHandle) -> Option<String> { app.dialog().file().blocking_pick_folder().map(|p| p.to_string()) }
@@ -211,7 +232,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .setup(|app| { setup_tray(app)?; if std::env::args().any(|a| a == "--minimized") { if let Some(window) = app.get_webview_window("main") { let _ = window.hide(); } } start_scheduler(app.handle().clone()); Ok(()) })
         .on_window_event(|window, event| { if let tauri::WindowEvent::CloseRequested { api, .. } = event { if window.app_handle().state::<Store>().settings.lock().unwrap().close_behavior == models::CloseBehavior::Background { api.prevent_close(); let _ = window.hide(); } } })
-        .invoke_handler(tauri::generate_handler![get_state, save_repository, delete_repository, detect_branch, inspect_repository_path, choose_folder, open_folder, save_settings, clear_logs, update_repository, initialize_repository, update_all, check_app_update, install_app_update, exit_app])
+        .invoke_handler(tauri::generate_handler![get_state, save_repository, delete_repository, detect_branch, inspect_repository_path, get_git_auth_status, login_github, logout_github, choose_folder, open_folder, save_settings, clear_logs, update_repository, initialize_repository, update_all, check_app_update, install_app_update, exit_app])
         .run(tauri::generate_context!())
         .expect("error while running Git Auto Pull");
 }

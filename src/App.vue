@@ -2,15 +2,15 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { api } from './api'
-import type { AppState, MotionPreference, Repository, RepositoryPathStatus, ThemeMode } from './types'
+import type { AppState, GitAuthStatus, MotionPreference, Repository, RepositoryPathStatus, ThemeMode } from './types'
 
-type Page = 'repositories' | 'automation' | 'settings' | 'logs'
+type Page = 'repositories' | 'automation' | 'auth' | 'settings' | 'logs'
 const requestedPage = new URLSearchParams(window.location.search).get('page')
-const page = ref<Page>((['repositories', 'automation', 'settings', 'logs'] as const).includes(requestedPage as Page) ? requestedPage as Page : 'repositories')
+const page = ref<Page>((['repositories', 'automation', 'auth', 'settings', 'logs'] as const).includes(requestedPage as Page) ? requestedPage as Page : 'repositories')
 const loading = ref(true)
 const busy = ref(false)
 const toast = ref('')
-const state = reactive<AppState>({ version: '3.2.0', settings: { repositories: [], startWithWindows: false, closeBehavior: 'background', proxyMode: 'system', proxyAddress: '', autoMaintainLogs: true, maxLogSizeMb: 5, autoCheckUpdates: true, updateEndpoint: 'https://github.com/sleep-into-a-coma/Git-Myself-Pull/releases/latest/download/latest.json', themeMode: 'system', accentColor: '#0169cc', lightBackground: '#ffffff', lightForeground: '#0d0d0d', darkBackground: '#202223', darkForeground: '#f4f4f4', uiFont: "'Segoe UI Variable', 'Microsoft YaHei UI', 'Segoe UI', sans-serif", codeFont: "'Cascadia Mono', Consolas, monospace", translucentSidebar: true, contrast: 45, pointerCursor: false, motionPreference: 'system', uiFontSize: 14, codeFontSize: 12 }, logs: [] })
+const state = reactive<AppState>({ version: '3.3.0', settings: { repositories: [], startWithWindows: false, closeBehavior: 'background', proxyMode: 'system', proxyAddress: '', autoMaintainLogs: true, maxLogSizeMb: 5, autoCheckUpdates: true, updateEndpoint: 'https://github.com/sleep-into-a-coma/Git-Myself-Pull/releases/latest/download/latest.json', themeMode: 'system', accentColor: '#0169cc', lightBackground: '#ffffff', lightForeground: '#0d0d0d', darkBackground: '#202223', darkForeground: '#f4f4f4', uiFont: "'Segoe UI Variable', 'Microsoft YaHei UI', 'Segoe UI', sans-serif", codeFont: "'Cascadia Mono', Consolas, monospace", translucentSidebar: true, contrast: 45, pointerCursor: false, motionPreference: 'system', uiFontSize: 14, codeFontSize: 12 }, logs: [] })
 const selectedId = ref<string | null>(null)
 const blank = (): Repository => ({ id: '', name: '', url: '', localPath: '', branch: '', autoPull: false, intervalMinutes: 30, lastStatus: '尚未更新', isRunning: false })
 const form = reactive<Repository>(blank())
@@ -25,6 +25,10 @@ const repositoryActionLabel = computed(() => {
   return '目录不可用'
 })
 const repositoryActionDisabled = computed(() => busy.value || form.isRunning || formDirty.value || pathStatus.value.kind === 'invalid' || pathStatus.value.kind === 'nestedGit')
+const authStatus = ref<GitAuthStatus | null>(null)
+const authBusy = ref(false)
+const authError = ref('')
+const githubSignedIn = computed(() => (authStatus.value?.accounts.length || 0) > 0)
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)')
 const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
 const systemDark = ref(darkQuery.matches)
@@ -167,6 +171,35 @@ async function repositoryAction() {
   else if (!repositoryActionDisabled.value) await run(form.id)
 }
 async function runAll() { busy.value = true; try { await api.updateAll(); await refresh(); notify('全部同步任务完成') } catch (e) { notify(String(e)); await refresh() } finally { busy.value = false } }
+async function refreshAuthStatus() {
+  authBusy.value = true
+  authError.value = ''
+  try { authStatus.value = await api.gitAuthStatus() }
+  catch (error) { authError.value = String(error) }
+  finally { authBusy.value = false }
+}
+function openAuth() { page.value = 'auth'; void refreshAuthStatus() }
+async function loginGitHub() {
+  authBusy.value = true
+  authError.value = ''
+  try {
+    const message = await api.loginGitHub()
+    authStatus.value = await api.gitAuthStatus()
+    notify(message)
+  } catch (error) { authError.value = String(error); notify(String(error)) }
+  finally { authBusy.value = false }
+}
+async function logoutGitHub(account: string) {
+  if (!confirm(`退出 GitHub 账户“${account}”？这会从 Windows 凭据管理器中删除对应凭据。`)) return
+  authBusy.value = true
+  authError.value = ''
+  try {
+    const message = await api.logoutGitHub(account)
+    authStatus.value = await api.gitAuthStatus()
+    notify(message)
+  } catch (error) { authError.value = String(error); notify(String(error)) }
+  finally { authBusy.value = false }
+}
 async function persistSettings() { await api.saveSettings(state.settings) }
 async function toggleAuto(repo: Repository) { repo.autoPull = !repo.autoPull; if (repo.autoPull) repo.lastAttempt = undefined; await persistSettings() }
 async function clearLogs() { if (!confirm('清理全部运行日志？')) return; await api.clearLogs(); state.logs = [] }
@@ -186,6 +219,7 @@ onMounted(async () => {
   try {
     await refresh()
     await listen<AppState>('state-changed', event => apply(event.payload))
+    if (page.value === 'auth') await refreshAuthStatus()
     if (state.settings.autoCheckUpdates && state.settings.updateEndpoint.trim()) window.setTimeout(() => void checkUpdate(true), 1200)
   } catch (e) { notify(String(e)) } finally { loading.value = false }
 })
@@ -202,6 +236,7 @@ onBeforeUnmount(() => {
       <nav>
         <button :class="{ active: page === 'repositories' }" @click="page = 'repositories'"><span>⌂</span>仓库管理</button>
         <button :class="{ active: page === 'automation' }" @click="page = 'automation'"><span>↻</span>自动更新</button>
+        <button :class="{ active: page === 'auth' }" @click="openAuth"><span>◎</span>Git 登录</button>
         <button :class="{ active: page === 'settings' }" @click="page = 'settings'"><span>⚙</span>设置</button>
         <button :class="{ active: page === 'logs' }" @click="page = 'logs'"><span>≡</span>运行日志</button>
       </nav>
@@ -240,6 +275,47 @@ onBeforeUnmount(() => {
             <button class="button ghost" @click="run(repo.id)">立即检测</button>
           </article>
           <div v-if="!state.settings.repositories.length" class="empty surface"><b>暂无可配置项目</b><span>先在仓库管理中注册项目</span></div>
+        </section>
+      </template>
+
+      <template v-else-if="page === 'auth'">
+        <header class="page-header"><div><h1>Git 登录</h1><p>使用系统凭据安全访问私有仓库</p></div><button class="button ghost" :disabled="authBusy" @click="refreshAuthStatus">刷新状态</button></header>
+        <section class="auth-page">
+          <article class="codex-panel auth-overview">
+            <div class="auth-provider">
+              <div class="provider-mark">GH</div>
+              <div class="provider-copy"><strong>GitHub</strong><span>通过浏览器 OAuth 登录</span></div>
+              <span class="auth-badge" :class="{ signed: githubSignedIn }"><i></i>{{ githubSignedIn ? '已登录' : '未登录' }}</span>
+              <button class="button primary" :disabled="authBusy || !authStatus?.credentialManagerAvailable" @click="loginGitHub">{{ githubSignedIn ? '添加账户' : '使用浏览器登录' }}</button>
+            </div>
+            <div class="auth-meta-grid">
+              <div><span>Git for Windows</span><strong>{{ authStatus?.gitVersion || '未检测到' }}</strong></div>
+              <div><span>Credential Manager</span><strong>{{ authStatus?.credentialManagerVersion || '未检测到' }}</strong></div>
+              <div><span>凭据助手</span><strong class="auth-helper">{{ authStatus?.credentialHelper || '尚未配置' }}</strong></div>
+            </div>
+          </article>
+
+          <article class="codex-panel auth-accounts">
+            <div class="auth-section-title"><div><h2>已登录账户</h2><p>凭据由 Windows 凭据管理器保存</p></div><span>{{ authStatus?.accounts.length || 0 }}</span></div>
+            <div v-for="account in authStatus?.accounts" :key="account" class="auth-account-row">
+              <div class="account-avatar">{{ account.slice(0, 1).toUpperCase() }}</div>
+              <div><strong>{{ account }}</strong><span>github.com</span></div>
+              <button class="button ghost danger-text" :disabled="authBusy" @click="logoutGitHub(account)">退出</button>
+            </div>
+            <div v-if="!authStatus?.accounts.length" class="auth-empty"><strong>还没有 GitHub 账户</strong><span>登录后即可克隆和更新有权限访问的私有仓库</span></div>
+          </article>
+
+          <div v-if="authError" class="auth-error">{{ authError }}</div>
+
+          <article class="auth-note">
+            <div class="note-icon">✓</div>
+            <div><strong>应用不会保存你的密码或令牌</strong><p>OAuth 凭据由 Git Credential Manager 写入 Windows 凭据管理器。Git Auto Pull 只读取账户名称和组件状态。</p></div>
+          </article>
+
+          <article class="codex-panel other-hosts">
+            <div><strong>其他 HTTPS Git 服务</strong><p>GitLab、Bitbucket、Azure DevOps 和自建服务会在首次克隆或更新时由 Git Credential Manager 自动显示对应登录界面。</p></div>
+            <span>自动识别</span>
+          </article>
         </section>
       </template>
 

@@ -115,3 +115,14 @@ pub enum RepositoryPathKind { Missing, Empty, Git, NonGit, NestedGit, Invalid }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepositoryPathStatus { pub kind: RepositoryPathKind, pub message: String }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitAuthStatus {
+    pub git_available: bool,
+    pub git_version: String,
+    pub credential_manager_available: bool,
+    pub credential_manager_version: String,
+    pub credential_helper: String,
+    pub accounts: Vec<String>,
+}

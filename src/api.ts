@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AppState, Repository, RepositoryPathStatus, Settings, UpdateStatus } from './types'
+import type { AppState, GitAuthStatus, Repository, RepositoryPathStatus, Settings, UpdateStatus } from './types'
 
 export const api = {
   state: () => invoke<AppState>('get_state'),
@@ -10,6 +10,9 @@ export const api = {
   updateAll: () => invoke<void>('update_all'),
   detectBranch: (path: string) => invoke<string>('detect_branch', { path }),
   inspectRepositoryPath: (path: string) => invoke<RepositoryPathStatus>('inspect_repository_path', { path }),
+  gitAuthStatus: () => invoke<GitAuthStatus>('get_git_auth_status'),
+  loginGitHub: () => invoke<string>('login_github'),
+  logoutGitHub: (account: string) => invoke<string>('logout_github', { account }),
   chooseFolder: () => invoke<string | null>('choose_folder'),
   openFolder: (path: string) => invoke<void>('open_folder', { path }),
   saveSettings: (settings: Settings) => invoke<void>('save_settings', { settings }),

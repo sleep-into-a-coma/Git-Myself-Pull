@@ -1,5 +1,5 @@
 use crate::models::{
-    GitResult, ProxyMode, Repository, RepositoryPathKind, RepositoryPathStatus,
+    GitAuthStatus, GitResult, ProxyMode, Repository, RepositoryPathKind, RepositoryPathStatus,
 };
 use std::{fs, path::Path, process::Command};
 
@@ -66,6 +66,101 @@ pub fn inspect_path(value: &str) -> RepositoryPathStatus {
         RepositoryPathKind::NonGit,
         "目录包含现有文件，可注册为 Git 仓库",
     )
+}
+
+pub fn auth_status() -> GitAuthStatus {
+    let git_version = run(None, &["--version"], ProxyMode::System, "").unwrap_or_default();
+    let credential_manager_version = run(
+        None,
+        &["credential-manager", "--version"],
+        ProxyMode::System,
+        "",
+    )
+    .unwrap_or_default();
+    let credential_helper = run(
+        None,
+        &["config", "--show-origin", "--get-all", "credential.helper"],
+        ProxyMode::System,
+        "",
+    )
+    .unwrap_or_default();
+    let accounts = if credential_manager_version.is_empty() {
+        Vec::new()
+    } else {
+        github_accounts().unwrap_or_default()
+    };
+    GitAuthStatus {
+        git_available: !git_version.is_empty(),
+        git_version,
+        credential_manager_available: !credential_manager_version.is_empty(),
+        credential_manager_version,
+        credential_helper,
+        accounts,
+    }
+}
+
+pub fn github_login(proxy_mode: ProxyMode, proxy_address: &str) -> Result<String, String> {
+    ensure_git().map_err(|(message, details)| join_error(message, details))?;
+    run(
+        None,
+        &["credential-manager", "--version"],
+        ProxyMode::System,
+        "",
+    )
+    .map_err(|_| "未找到 Git Credential Manager，请重新安装 Git for Windows".to_string())?;
+    if run(
+        None,
+        &["config", "--get-all", "credential.helper"],
+        ProxyMode::System,
+        "",
+    )
+    .unwrap_or_default()
+    .trim()
+    .is_empty()
+    {
+        run(
+            None,
+            &["credential-manager", "configure"],
+            ProxyMode::System,
+            "",
+        )
+        .map_err(|error| format!("配置 Git Credential Manager 失败：{error}"))?;
+    }
+    run(
+        None,
+        &["credential-manager", "github", "login", "--browser"],
+        proxy_mode,
+        proxy_address,
+    )
+    .map_err(|error| format!("GitHub 登录失败：{error}"))?;
+    let accounts = github_accounts().unwrap_or_default();
+    if accounts.is_empty() {
+        Err("登录流程已结束，但没有检测到 GitHub 账户".into())
+    } else {
+        Ok(format!("GitHub 登录完成：{}", accounts.join("、")))
+    }
+}
+
+pub fn github_logout(account: &str) -> Result<String, String> {
+    let account = account.trim();
+    if account.is_empty() {
+        return Err("账户名不能为空".into());
+    }
+    let accounts = github_accounts().map_err(|error| format!("无法读取 GitHub 账户：{error}"))?;
+    let Some(stored) = accounts
+        .iter()
+        .find(|stored| stored.eq_ignore_ascii_case(account))
+    else {
+        return Err("该 GitHub 账户不在凭据管理器中".into());
+    };
+    run(
+        None,
+        &["credential-manager", "github", "logout", stored],
+        ProxyMode::System,
+        "",
+    )
+    .map_err(|error| format!("退出 GitHub 失败：{error}"))?;
+    Ok(format!("已退出 GitHub 账户 {stored}"))
 }
 
 pub fn update(repo: &Repository, proxy_mode: ProxyMode, proxy_address: &str) -> GitResult {
@@ -340,6 +435,29 @@ fn ensure_git() -> Result<(), (String, String)> {
     run(None, &["--version"], ProxyMode::System, "")
         .map(|_| ())
         .map_err(|error| ("未找到 Git，请先安装 Git for Windows".into(), error))
+}
+
+fn github_accounts() -> Result<Vec<String>, String> {
+    let output = run(
+        None,
+        &["credential-manager", "github", "list"],
+        ProxyMode::System,
+        "",
+    )?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("warning:"))
+        .map(str::to_string)
+        .collect())
+}
+
+fn join_error(message: String, details: String) -> String {
+    if details.trim().is_empty() {
+        message
+    } else {
+        format!("{message}：{details}")
+    }
 }
 
 fn into_result(result: Result<(String, String), (String, String)>) -> GitResult {

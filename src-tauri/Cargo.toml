@@ -1,6 +1,6 @@
 [package]
 name = "git-auto-pull"
-version = "3.2.0"
+version = "3.3.0"
 description = "Git repository update manager"
 authors = ["Git Auto Pull"]
 edition = "2024"

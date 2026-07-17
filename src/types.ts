@@ -9,6 +9,15 @@ export interface RepositoryPathStatus {
   message: string
 }
 
+export interface GitAuthStatus {
+  gitAvailable: boolean
+  gitVersion: string
+  credentialManagerAvailable: boolean
+  credentialManagerVersion: string
+  credentialHelper: string
+  accounts: string[]
+}
+
 export interface Repository {
   id: string
   name: string
