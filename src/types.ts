@@ -81,6 +81,8 @@ export interface Repository {
   lastSuccess?: string
   lastStatus: string
   isRunning: boolean
+  isQueued: boolean
+  queuePosition: number
 }
 
 export interface Settings {
@@ -108,12 +110,20 @@ export interface Settings {
   motionPreference: MotionPreference
   uiFontSize: number
   codeFontSize: number
+  maxConcurrentGitOperations: number
+}
+
+export interface OperationQueueStatus {
+  active: number
+  queued: number
+  maxConcurrent: number
 }
 
 export interface AppState {
   version: string
   settings: Settings
   logs: string[]
+  operationQueue: OperationQueueStatus
 }
 
 export interface UpdateStatus {

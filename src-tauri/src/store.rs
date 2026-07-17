@@ -1,4 +1,4 @@
-use crate::models::{AppState, CloseBehavior, ProxyMode, Repository, Settings, DEFAULT_UPDATE_ENDPOINT};
+use crate::models::{AppState, CloseBehavior, OperationQueueStatus, ProxyMode, Repository, Settings, DEFAULT_UPDATE_ENDPOINT};
 use chrono::Utc;
 use serde_json::Value;
 use std::{collections::VecDeque, fs, path::PathBuf, sync::Mutex};
@@ -16,7 +16,7 @@ impl Store {
     }
 
     pub fn snapshot(&self) -> AppState {
-        AppState { version: env!("CARGO_PKG_VERSION").into(), settings: self.settings.lock().unwrap().clone(), logs: self.logs.lock().unwrap().iter().cloned().collect() }
+        AppState { version: env!("CARGO_PKG_VERSION").into(), settings: self.settings.lock().unwrap().clone(), logs: self.logs.lock().unwrap().iter().cloned().collect(), operation_queue: OperationQueueStatus::default() }
     }
 
     pub fn save(&self) -> Result<(), String> {

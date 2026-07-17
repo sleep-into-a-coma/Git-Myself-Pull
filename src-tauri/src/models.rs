@@ -28,6 +28,10 @@ pub struct Repository {
     pub last_status: String,
     #[serde(default, skip_deserializing)]
     pub is_running: bool,
+    #[serde(default, skip_deserializing)]
+    pub is_queued: bool,
+    #[serde(default, skip_deserializing)]
+    pub queue_position: u32,
 }
 
 fn default_interval() -> u32 { 30 }
@@ -35,7 +39,7 @@ fn default_status() -> String { "尚未更新".into() }
 
 impl Default for Repository {
     fn default() -> Self {
-        Self { id: String::new(), name: String::new(), url: String::new(), local_path: String::new(), branch: String::new(), auto_pull: false, interval_minutes: 30, last_attempt: None, last_success: None, last_status: default_status(), is_running: false }
+        Self { id: String::new(), name: String::new(), url: String::new(), local_path: String::new(), branch: String::new(), auto_pull: false, interval_minutes: 30, last_attempt: None, last_success: None, last_status: default_status(), is_running: false, is_queued: false, queue_position: 0 }
     }
 }
 
@@ -82,6 +86,7 @@ pub struct Settings {
     #[serde(default)] pub motion_preference: MotionPreference,
     #[serde(default = "default_ui_font_size")] pub ui_font_size: u8,
     #[serde(default = "default_code_font_size")] pub code_font_size: u8,
+    #[serde(default = "default_git_concurrency")] pub max_concurrent_git_operations: u8,
 }
 
 fn yes() -> bool { true }
@@ -97,14 +102,19 @@ fn default_code_font() -> String { "'Cascadia Mono', Consolas, monospace".into()
 fn default_contrast() -> u8 { 45 }
 fn default_ui_font_size() -> u8 { 14 }
 fn default_code_font_size() -> u8 { 12 }
+fn default_git_concurrency() -> u8 { 2 }
 
 impl Default for Settings {
-    fn default() -> Self { Self { repositories: vec![], github_projects_root: String::new(), start_with_windows: false, close_behavior: CloseBehavior::Background, proxy_mode: ProxyMode::System, proxy_address: String::new(), auto_maintain_logs: true, max_log_size_mb: 5, auto_check_updates: true, update_endpoint: default_update_endpoint(), theme_mode: ThemeMode::System, accent_color: default_accent_color(), light_background: default_light_background(), light_foreground: default_light_foreground(), dark_background: default_dark_background(), dark_foreground: default_dark_foreground(), ui_font: default_ui_font(), code_font: default_code_font(), translucent_sidebar: true, contrast: default_contrast(), pointer_cursor: false, motion_preference: MotionPreference::System, ui_font_size: default_ui_font_size(), code_font_size: default_code_font_size() } }
+    fn default() -> Self { Self { repositories: vec![], github_projects_root: String::new(), start_with_windows: false, close_behavior: CloseBehavior::Background, proxy_mode: ProxyMode::System, proxy_address: String::new(), auto_maintain_logs: true, max_log_size_mb: 5, auto_check_updates: true, update_endpoint: default_update_endpoint(), theme_mode: ThemeMode::System, accent_color: default_accent_color(), light_background: default_light_background(), light_foreground: default_light_foreground(), dark_background: default_dark_background(), dark_foreground: default_dark_foreground(), ui_font: default_ui_font(), code_font: default_code_font(), translucent_sidebar: true, contrast: default_contrast(), pointer_cursor: false, motion_preference: MotionPreference::System, ui_font_size: default_ui_font_size(), code_font_size: default_code_font_size(), max_concurrent_git_operations: default_git_concurrency() } }
 }
+
+#[derive(Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationQueueStatus { pub active: u32, pub queued: u32, pub max_concurrent: u8 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppState { pub version: String, pub settings: Settings, pub logs: Vec<String> }
+pub struct AppState { pub version: String, pub settings: Settings, pub logs: Vec<String>, pub operation_queue: OperationQueueStatus }
 
 #[derive(Debug)]
 pub struct GitResult { pub success: bool, pub message: String, pub details: String }
