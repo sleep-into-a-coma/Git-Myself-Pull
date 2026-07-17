@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { api } from './api'
-import type { AppState, MotionPreference, Repository, ThemeMode } from './types'
+import type { AppState, MotionPreference, Repository, RepositoryPathStatus, ThemeMode } from './types'
 
 type Page = 'repositories' | 'automation' | 'settings' | 'logs'
 const requestedPage = new URLSearchParams(window.location.search).get('page')
@@ -10,11 +10,21 @@ const page = ref<Page>((['repositories', 'automation', 'settings', 'logs'] as co
 const loading = ref(true)
 const busy = ref(false)
 const toast = ref('')
-const state = reactive<AppState>({ version: '3.1.0', settings: { repositories: [], startWithWindows: false, closeBehavior: 'background', proxyMode: 'system', proxyAddress: '', autoMaintainLogs: true, maxLogSizeMb: 5, autoCheckUpdates: true, updateEndpoint: 'https://github.com/sleep-into-a-coma/Git-Myself-Pull/releases/latest/download/latest.json', themeMode: 'system', accentColor: '#0169cc', lightBackground: '#ffffff', lightForeground: '#0d0d0d', darkBackground: '#202223', darkForeground: '#f4f4f4', uiFont: "'Segoe UI Variable', 'Microsoft YaHei UI', 'Segoe UI', sans-serif", codeFont: "'Cascadia Mono', Consolas, monospace", translucentSidebar: true, contrast: 45, pointerCursor: false, motionPreference: 'system', uiFontSize: 14, codeFontSize: 12 }, logs: [] })
+const state = reactive<AppState>({ version: '3.2.0', settings: { repositories: [], startWithWindows: false, closeBehavior: 'background', proxyMode: 'system', proxyAddress: '', autoMaintainLogs: true, maxLogSizeMb: 5, autoCheckUpdates: true, updateEndpoint: 'https://github.com/sleep-into-a-coma/Git-Myself-Pull/releases/latest/download/latest.json', themeMode: 'system', accentColor: '#0169cc', lightBackground: '#ffffff', lightForeground: '#0d0d0d', darkBackground: '#202223', darkForeground: '#f4f4f4', uiFont: "'Segoe UI Variable', 'Microsoft YaHei UI', 'Segoe UI', sans-serif", codeFont: "'Cascadia Mono', Consolas, monospace", translucentSidebar: true, contrast: 45, pointerCursor: false, motionPreference: 'system', uiFontSize: 14, codeFontSize: 12 }, logs: [] })
 const selectedId = ref<string | null>(null)
 const blank = (): Repository => ({ id: '', name: '', url: '', localPath: '', branch: '', autoPull: false, intervalMinutes: 30, lastStatus: '尚未更新', isRunning: false })
 const form = reactive<Repository>(blank())
 const selected = computed(() => state.settings.repositories.find(r => r.id === selectedId.value))
+const pathStatus = ref<RepositoryPathStatus>({ kind: 'invalid', message: '请先选择本地目录' })
+const formDirty = computed(() => !!selected.value && (form.name !== selected.value.name || form.url !== selected.value.url || form.localPath !== selected.value.localPath || form.branch !== selected.value.branch))
+const repositoryActionLabel = computed(() => {
+  if (formDirty.value) return '请先保存修改'
+  if (pathStatus.value.kind === 'missing' || pathStatus.value.kind === 'empty') return '克隆项目'
+  if (pathStatus.value.kind === 'nonGit') return '注册为 Git 仓库'
+  if (pathStatus.value.kind === 'git') return '立即更新'
+  return '目录不可用'
+})
+const repositoryActionDisabled = computed(() => busy.value || form.isRunning || formDirty.value || pathStatus.value.kind === 'invalid' || pathStatus.value.kind === 'nestedGit')
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)')
 const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
 const systemDark = ref(darkQuery.matches)
@@ -100,12 +110,28 @@ function apply(next: AppState) {
 
 async function refresh() { apply(await api.state()) }
 function notify(message: string) { toast.value = message; window.setTimeout(() => toast.value = '', 2400) }
-function select(repo?: Repository) { selectedId.value = repo?.id || null; Object.assign(form, repo ? structuredClone(repo) : blank()) }
+function select(repo?: Repository) {
+  selectedId.value = repo?.id || null
+  Object.assign(form, repo ? structuredClone(repo) : blank())
+  pathStatus.value = { kind: 'invalid', message: repo ? '正在检查目录…' : '请先选择本地目录' }
+  if (repo?.localPath) void inspectPath()
+}
+
+async function inspectPath() {
+  const path = form.localPath.trim()
+  if (!path) { pathStatus.value = { kind: 'invalid', message: '请先选择本地目录' }; return }
+  try {
+    const result = await api.inspectRepositoryPath(path)
+    if (form.localPath.trim() === path) pathStatus.value = result
+  } catch (error) {
+    if (form.localPath.trim() === path) pathStatus.value = { kind: 'invalid', message: String(error) }
+  }
+}
 
 async function saveRepository() {
   if (!form.url.trim() || !form.localPath.trim()) return notify('请填写 Git 地址和本地目录')
   busy.value = true
-  try { const saved = await api.saveRepository({ ...form }); selectedId.value = saved.id; await refresh(); notify('项目已保存') }
+  try { const saved = await api.saveRepository({ ...form }); selectedId.value = saved.id; await refresh(); await inspectPath(); notify('项目已保存') }
   catch (e) { notify(String(e)) } finally { busy.value = false }
 }
 
@@ -114,10 +140,33 @@ async function removeRepository() {
   await api.deleteRepository(selected.value.id); select(); await refresh(); notify('项目已删除')
 }
 
-async function browse() { const path = await api.chooseFolder(); if (path) form.localPath = path }
-async function detectBranch() { form.branch = await api.detectBranch(form.localPath); if (!form.branch) notify('未检测到分支') }
-async function run(id: string) { busy.value = true; try { await api.updateRepository(id); await refresh(); notify('检查完成') } catch (e) { notify(String(e)) } finally { busy.value = false } }
-async function runAll() { busy.value = true; try { await api.updateAll(); await refresh(); notify('全部检查完成') } catch (e) { notify(String(e)) } finally { busy.value = false } }
+async function browse() { const path = await api.chooseFolder(); if (path) { form.localPath = path; await inspectPath() } }
+async function detectBranch() { form.branch = await api.detectBranch(form.localPath); if (!form.branch) notify('未检测到分支'); await inspectPath() }
+async function run(id: string) {
+  busy.value = true
+  try {
+    await api.updateRepository(id)
+    await refresh()
+    await inspectPath()
+    notify(state.settings.repositories.find(repo => repo.id === id)?.lastStatus || '任务完成')
+  } catch (e) { notify(String(e)); await refresh(); await inspectPath() } finally { busy.value = false }
+}
+async function initializeRepository(id: string) {
+  if (!confirm('将在目标目录创建 .git、关联 origin 并读取远程分支。现有文件不会被覆盖，是否继续？')) return
+  busy.value = true
+  try {
+    const message = await api.initializeRepository(id)
+    await refresh()
+    await inspectPath()
+    notify(message)
+  } catch (e) { notify(String(e)); await refresh(); await inspectPath() } finally { busy.value = false }
+}
+async function repositoryAction() {
+  if (!form.id) return
+  if (pathStatus.value.kind === 'nonGit') await initializeRepository(form.id)
+  else if (!repositoryActionDisabled.value) await run(form.id)
+}
+async function runAll() { busy.value = true; try { await api.updateAll(); await refresh(); notify('全部同步任务完成') } catch (e) { notify(String(e)); await refresh() } finally { busy.value = false } }
 async function persistSettings() { await api.saveSettings(state.settings) }
 async function toggleAuto(repo: Repository) { repo.autoPull = !repo.autoPull; if (repo.autoPull) repo.lastAttempt = undefined; await persistSettings() }
 async function clearLogs() { if (!confirm('清理全部运行日志？')) return; await api.clearLogs(); state.logs = [] }
@@ -161,7 +210,7 @@ onBeforeUnmount(() => {
 
     <main class="main" :aria-busy="loading || busy">
       <template v-if="page === 'repositories'">
-        <header class="page-header"><div><h1>仓库管理</h1><p>管理本地 Git 项目与远程更新</p></div><div class="header-actions"><button class="button ghost" @click="runAll">全部更新</button><button class="button primary" @click="select()">注册新项目</button></div></header>
+        <header class="page-header"><div><h1>仓库管理</h1><p>克隆、注册并同步本地 Git 项目</p></div><div class="header-actions"><button class="button ghost" @click="runAll">全部同步</button><button class="button primary" @click="select()">注册新项目</button></div></header>
         <section class="repo-layout">
           <div class="repo-list surface">
             <div class="list-head"><span>项目</span><span>分支</span><span>状态</span></div>
@@ -174,9 +223,9 @@ onBeforeUnmount(() => {
             <div class="section-title"><h2>{{ form.id ? '编辑项目' : '注册项目' }}</h2><button v-if="form.id" type="button" class="icon-button" @click="select()">＋</button></div>
             <label>名称<input v-model="form.name" placeholder="自动从地址生成" /></label>
             <label>Git 地址<input v-model="form.url" placeholder="https://github.com/user/repository.git" /></label>
-            <label>本地目录<div class="field-action"><input v-model="form.localPath" placeholder="选择 clone 位置" /><button type="button" @click="browse">浏览</button></div></label>
+            <label>本地目录<div class="field-action"><input v-model="form.localPath" placeholder="选择 clone 位置" @change="inspectPath" /><button type="button" @click="browse">浏览</button></div><span v-if="form.localPath" class="path-status" :class="pathStatus.kind"><i></i>{{ pathStatus.message }}</span></label>
             <label>分支<div class="field-action"><input v-model="form.branch" placeholder="留空使用当前分支" /><button type="button" @click="detectBranch">检测</button></div></label>
-            <div class="form-actions"><button type="submit" class="button primary" :disabled="busy">保存项目</button><button v-if="form.id" type="button" class="button ghost" @click="run(form.id)">立即更新</button><button v-if="form.id" type="button" class="button ghost" @click="api.openFolder(form.localPath)">打开目录</button><button v-if="form.id" type="button" class="button danger" @click="removeRepository">删除</button></div>
+            <div class="form-actions"><button type="submit" class="button primary" :disabled="busy">保存项目</button><button v-if="form.id" type="button" class="button ghost" :disabled="repositoryActionDisabled" @click="repositoryAction">{{ repositoryActionLabel }}</button><button v-if="form.id" type="button" class="button ghost" @click="api.openFolder(form.localPath)">打开目录</button><button v-if="form.id" type="button" class="button danger" @click="removeRepository">删除</button></div>
           </form>
         </section>
       </template>

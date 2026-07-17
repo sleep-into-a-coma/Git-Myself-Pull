@@ -107,3 +107,11 @@ pub struct AppState { pub version: String, pub settings: Settings, pub logs: Vec
 
 #[derive(Debug)]
 pub struct GitResult { pub success: bool, pub message: String, pub details: String }
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum RepositoryPathKind { Missing, Empty, Git, NonGit, NestedGit, Invalid }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryPathStatus { pub kind: RepositoryPathKind, pub message: String }

@@ -2,6 +2,12 @@ export type ProxyMode = 'system' | 'disabled' | 'custom'
 export type CloseBehavior = 'background' | 'exit'
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type MotionPreference = 'system' | 'reduce' | 'full'
+export type RepositoryPathKind = 'missing' | 'empty' | 'git' | 'nonGit' | 'nestedGit' | 'invalid'
+
+export interface RepositoryPathStatus {
+  kind: RepositoryPathKind
+  message: string
+}
 
 export interface Repository {
   id: string

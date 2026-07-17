@@ -1,13 +1,15 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AppState, Repository, Settings, UpdateStatus } from './types'
+import type { AppState, Repository, RepositoryPathStatus, Settings, UpdateStatus } from './types'
 
 export const api = {
   state: () => invoke<AppState>('get_state'),
   saveRepository: (repository: Repository) => invoke<Repository>('save_repository', { repository }),
   deleteRepository: (id: string) => invoke<void>('delete_repository', { id }),
   updateRepository: (id: string) => invoke<void>('update_repository', { id }),
+  initializeRepository: (id: string) => invoke<string>('initialize_repository', { id }),
   updateAll: () => invoke<void>('update_all'),
   detectBranch: (path: string) => invoke<string>('detect_branch', { path }),
+  inspectRepositoryPath: (path: string) => invoke<RepositoryPathStatus>('inspect_repository_path', { path }),
   chooseFolder: () => invoke<string | null>('choose_folder'),
   openFolder: (path: string) => invoke<void>('open_folder', { path }),
   saveSettings: (settings: Settings) => invoke<void>('save_settings', { settings }),

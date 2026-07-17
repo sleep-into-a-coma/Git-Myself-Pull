@@ -175,6 +175,11 @@ html[data-translucent="true"] .sidebar { backdrop-filter: blur(22px) saturate(11
 }
 .field-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
 .field-action button { min-width: 58px; padding: 0 12px; border: 0; border-radius: 9px; background: var(--surface-hover); }
+.path-status { display: flex; align-items: center; gap: 7px; min-height: 20px; color: var(--muted); font-size: .82rem; }
+.path-status i { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.path-status.git { color: #299764; }
+.path-status.missing, .path-status.empty, .path-status.nonGit { color: var(--accent); }
+.path-status.nestedGit, .path-status.invalid { color: var(--danger); }
 .empty { display: grid; place-items: center; align-content: center; gap: 6px; min-height: 180px; color: var(--muted); font-size: .93rem; }
 
 .stack { display: grid; gap: 10px; }
