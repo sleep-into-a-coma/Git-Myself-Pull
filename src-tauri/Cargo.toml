@@ -1,6 +1,6 @@
 [package]
 name = "git-auto-pull"
-version = "3.1.0"
+version = "3.4.0"
 description = "Git repository update manager"
 authors = ["Git Auto Pull"]
 edition = "2024"
@@ -25,6 +25,10 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
+base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+zeroize = "1"
 
 [profile.release]
 panic = "abort"

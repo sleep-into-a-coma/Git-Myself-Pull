@@ -2,6 +2,72 @@ export type ProxyMode = 'system' | 'disabled' | 'custom'
 export type CloseBehavior = 'background' | 'exit'
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type MotionPreference = 'system' | 'reduce' | 'full'
+export type RepositoryPathKind = 'missing' | 'empty' | 'git' | 'nonGit' | 'nestedGit' | 'invalid'
+
+export interface RepositoryPathStatus {
+  kind: RepositoryPathKind
+  message: string
+}
+
+export interface GitAuthStatus {
+  gitAvailable: boolean
+  gitVersion: string
+  credentialManagerAvailable: boolean
+  credentialManagerVersion: string
+  credentialHelper: string
+  accounts: GitAccountProfile[]
+}
+
+export interface GitAccountProfile {
+  login: string
+  name?: string
+  bio?: string
+  company?: string
+  location?: string
+  publicRepos: number
+  followers: number
+  avatarData?: string
+  profileError?: string
+}
+
+export interface GitHubProject {
+  id: number
+  name: string
+  fullName: string
+  description?: string
+  cloneUrl: string
+  remoteKey: string
+  defaultBranch: string
+  private: boolean
+  fork: boolean
+  archived: boolean
+  language?: string
+  stars: number
+  canPush: boolean
+  pushedAt?: string
+}
+
+export interface LocalGitProject {
+  name: string
+  path: string
+  originUrl: string
+  remoteKey: string
+  branch: string
+}
+
+export interface ManagedProjectStatus {
+  kind: RepositoryPathKind
+  message: string
+  branch: string
+  originUrl: string
+  remoteMatches: boolean
+  changes: number
+  staged: number
+  unstaged: number
+  untracked: number
+  ahead: number
+  behind: number
+}
 
 export interface Repository {
   id: string
@@ -19,6 +85,7 @@ export interface Repository {
 
 export interface Settings {
   repositories: Repository[]
+  githubProjectsRoot: string
   startWithWindows: boolean
   closeBehavior: CloseBehavior
   proxyMode: ProxyMode
