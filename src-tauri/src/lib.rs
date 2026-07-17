@@ -352,8 +352,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
-        .setup(|app| { setup_tray(app)?; if std::env::args().any(|a| a == "--minimized") { if let Some(window) = app.get_webview_window("main") { let _ = window.hide(); } } start_scheduler(app.handle().clone()); Ok(()) })
-        .on_window_event(|window, event| { if let tauri::WindowEvent::CloseRequested { api, .. } = event { if window.app_handle().state::<Store>().settings.lock().unwrap().close_behavior == models::CloseBehavior::Background { api.prevent_close(); let _ = window.hide(); } } })
+        .setup(|app| { setup_tray(app)?; if std::env::args().any(|a| a == "--minimized") && let Some(window) = app.get_webview_window("main") { let _ = window.hide(); } start_scheduler(app.handle().clone()); Ok(()) })
+        .on_window_event(|window, event| { if let tauri::WindowEvent::CloseRequested { api, .. } = event && window.app_handle().state::<Store>().settings.lock().unwrap().close_behavior == models::CloseBehavior::Background { api.prevent_close(); let _ = window.hide(); } })
         .invoke_handler(tauri::generate_handler![get_state, save_repository, delete_repository, detect_branch, inspect_repository_path, get_git_auth_status, login_github, logout_github, list_github_projects, discover_local_projects, inspect_managed_project, choose_folder, open_folder, save_settings, clear_logs, update_repository, commit_and_push_project, push_project, initialize_repository, update_all, check_app_update, install_app_update, exit_app])
         .run(tauri::generate_context!())
         .expect("error while running Git Auto Pull");

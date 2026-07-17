@@ -308,7 +308,7 @@ pub fn discover_local_projects(root: &str) -> Result<Vec<LocalGitProject>, Strin
     let mut projects = Vec::new();
     let mut visited = 0usize;
     scan_project_directories(root, 0, &mut visited, &mut projects);
-    projects.sort_by(|left, right| left.path.to_lowercase().cmp(&right.path.to_lowercase()));
+    projects.sort_by_key(|project| project.path.to_lowercase());
     Ok(projects)
 }
 
@@ -817,13 +817,12 @@ fn profile_client(
                 &["config", "--get", "http.proxy"],
                 ProxyMode::System,
                 "",
-            ) {
-                if !address.trim().is_empty() {
-                    builder = builder.proxy(
-                        reqwest::Proxy::all(address.trim())
-                            .map_err(|error| format!("Git 代理地址无效：{error}"))?,
-                    );
-                }
+            ) && !address.trim().is_empty()
+            {
+                builder = builder.proxy(
+                    reqwest::Proxy::all(address.trim())
+                        .map_err(|error| format!("Git 代理地址无效：{error}"))?,
+                );
             }
         }
         _ => {}
@@ -974,19 +973,18 @@ fn scan_project_directories(
             &["remote", "get-url", "origin"],
             ProxyMode::System,
             "",
-        ) {
-            if !origin_url.trim().is_empty() {
-                projects.push(LocalGitProject {
-                    name: path
-                        .file_name()
-                        .map(|value| value.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.to_string_lossy().into_owned()),
-                    path: path.to_string_lossy().into_owned(),
-                    remote_key: normalize_remote(origin_url.trim()),
-                    origin_url: origin_url.trim().to_string(),
-                    branch: detect_branch(&path.to_string_lossy()),
-                });
-            }
+        ) && !origin_url.trim().is_empty()
+        {
+            projects.push(LocalGitProject {
+                name: path
+                    .file_name()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+                path: path.to_string_lossy().into_owned(),
+                remote_key: normalize_remote(origin_url.trim()),
+                origin_url: origin_url.trim().to_string(),
+                branch: detect_branch(&path.to_string_lossy()),
+            });
         }
         return;
     }
@@ -1330,10 +1328,12 @@ mod tests {
         )
         .unwrap();
         fs::write(existing.join("file.txt"), "local content").unwrap();
-        let mut repository = Repository::default();
-        repository.url = remote.to_string_lossy().into_owned();
-        repository.local_path = existing.to_string_lossy().into_owned();
-        repository.branch = "main".into();
+        let repository = Repository {
+            url: remote.to_string_lossy().into_owned(),
+            local_path: existing.to_string_lossy().into_owned(),
+            branch: "main".into(),
+            ..Repository::default()
+        };
         let result = initialize(&repository, ProxyMode::System, "");
         assert!(result.success, "{}\n{}", result.message, result.details);
         assert_eq!(inspect_path(existing.to_str().unwrap()).kind, RepositoryPathKind::Git);
@@ -1356,9 +1356,11 @@ mod tests {
             "",
         )
         .unwrap();
-        let mut repository = Repository::default();
-        repository.url = remote.to_string_lossy().into_owned();
-        repository.local_path = local.to_string_lossy().into_owned();
+        let repository = Repository {
+            url: remote.to_string_lossy().into_owned(),
+            local_path: local.to_string_lossy().into_owned(),
+            ..Repository::default()
+        };
         let result = update(&repository, ProxyMode::System, "");
         assert!(result.success, "{}\n{}", result.message, result.details);
         assert_eq!(result.message, "克隆完成");
@@ -1386,11 +1388,13 @@ mod tests {
         run(Some(&local), &["config", "user.email", "test@example.invalid"], ProxyMode::System, "").unwrap();
         fs::write(local.join("README.md"), "changed").unwrap();
 
-        let mut repository = Repository::default();
-        repository.name = "project".into();
-        repository.url = remote.to_string_lossy().into_owned();
-        repository.local_path = local.to_string_lossy().into_owned();
-        repository.branch = "main".into();
+        let repository = Repository {
+            name: "project".into(),
+            url: remote.to_string_lossy().into_owned(),
+            local_path: local.to_string_lossy().into_owned(),
+            branch: "main".into(),
+            ..Repository::default()
+        };
         let status = managed_project_status(&repository.local_path, &repository.url);
         assert!(status.remote_matches);
         assert_eq!(status.changes, 1);
